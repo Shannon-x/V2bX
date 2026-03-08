@@ -176,8 +176,22 @@ command_user="root"
 pidfile="/run/V2bX.pid"
 command_background="yes"
 
+output_log="/var/log/V2bX.log"
+error_log="/var/log/V2bX.log"
+
 depend() {
         need net
+}
+
+start_pre() {
+        # 日志轮转：超过 2MB 时截断保留最后 1000 行，防止硬盘爆满
+        if [ -f /var/log/V2bX.log ]; then
+                local size=$(wc -c < /var/log/V2bX.log 2>/dev/null || echo 0)
+                if [ "$size" -gt 2097152 ]; then
+                        tail -n 1000 /var/log/V2bX.log > /var/log/V2bX.log.tmp
+                        mv /var/log/V2bX.log.tmp /var/log/V2bX.log
+                fi
+        fi
 }
 INITEOF
         chmod +x /etc/init.d/V2bX

@@ -556,6 +556,20 @@ masquerade:
   type: 404
 EOF
     echo -e "${green}V2bX 配置文件生成完成，正在重新启动 V2bX 服务${plain}"
-    restart 0
-    before_show_menu
+    # 判断是否有 restart 函数（从 V2bX.sh 调用时有，从 install.sh 调用时没有）
+    if type restart >/dev/null 2>&1; then
+        restart 0
+    else
+        # 从 install.sh source 调用，直接用系统命令重启
+        if [[ -f /etc/init.d/V2bX ]]; then
+            service V2bX restart
+        else
+            systemctl restart V2bX
+        fi
+        sleep 2
+        echo -e "${green}V2bX 重启完成${plain}"
+    fi
+    if type before_show_menu >/dev/null 2>&1; then
+        before_show_menu
+    fi
 }

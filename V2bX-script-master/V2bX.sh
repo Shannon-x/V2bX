@@ -286,7 +286,11 @@ disable() {
 
 show_log() {
     if [[ x"${release}" == x"alpine" ]]; then
-        echo -e "${red}alpine系统暂不支持日志查看${plain}\n" && exit 1
+        if [[ -f /var/log/V2bX.log ]]; then
+            tail -n 100 -f /var/log/V2bX.log
+        else
+            echo -e "${red}日志文件不存在，请先启动 V2bX${plain}"
+        fi
     else
         journalctl -u V2bX.service -e --no-pager -f
     fi

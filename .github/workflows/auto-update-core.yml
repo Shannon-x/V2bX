@@ -1,0 +1,78 @@
+name: Auto Update Cores
+
+on:
+  schedule:
+    - cron: '30 2 * * *' # 每天 UTC 02:30 (北京时间 10:30) 执行
+  workflow_dispatch:
+
+jobs:
+  update-cores:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v4
+        with:
+          ref: dev_new
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check and Update go.mod
+        run: |
+          # 启用 GOPROXY
+          go env -w GOPROXY=https://goproxy.cn,direct
+          
+          # 使用 sed 将 replace 指令重新指向 main / dev-next 分支
+          # 这样 go mod tidy 会自动拉取并生成最新的伪版本号 (pseudo-version)
+          sed -i -E 's|replace github.com/xtls/xray-core.*|replace github.com/xtls/xray-core => github.com/wyx2685/xray-core main|' go.mod
+          sed -i -E 's|replace github.com/sagernet/sing-box.*|replace github.com/sagernet/sing-box => github.com/wyx2685/sing-box_mod dev-next|' go.mod
+          
+          echo "Run go mod tidy to resolve latest pseudo-versions..."
+          go mod tidy
+          
+          # 验证更新后的依赖是否能通过编译
+          echo "Verifying build with updated cores..."
+          export GOEXPERIMENT=jsonv2 
+          go build -v -o V2bX_test -tags "sing xray hysteria2 with_quic with_grpc with_utls with_wireguard with_acme with_gvisor"
+          rm -f V2bX_test
+          
+          # 检查文件是否被修改
+          if git diff --quiet go.mod go.sum; then
+            echo "No updates available for kernels."
+            echo "CHANGED=false" >> $GITHUB_ENV
+          else
+            echo "Kernel updates found!"
+            echo "CHANGED=true" >> $GITHUB_ENV
+            cat go.mod | grep replace
+          fi
+
+      - name: Commit and Create Release
+        if: env.CHANGED == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 提交依赖更新
+          git add go.mod go.sum
+          git commit -m "build(deps): auto-update core dependencies [skip ci]"
+          
+          # 推送到 dev_new
+          git push origin dev_new
+          
+          # 使用当前日期生成版本号作为 tag
+          VERSION_TAG="v1.0.$(date +'%Y%m%d%H%M')"
+          echo "Generating new release tag: $VERSION_TAG"
+          
+          # 创建 GitHub Release，这将自动触发 Release.yml 中的构建和 Docker 发布流程
+          gh release create $VERSION_TAG \
+            --title "Core Update $VERSION_TAG" \
+            --notes "Automated release due to upstream core dependency updates (xray-core / sing-box_mod)." \
+            --target dev_new

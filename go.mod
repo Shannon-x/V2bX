@@ -1,32 +1,30 @@
 module github.com/InazumaV/V2bX
 
-go 1.25
-
-toolchain go1.25.0
+go 1.26
 
 require (
-	github.com/apernet/hysteria/core/v2 v2.6.4
+	github.com/apernet/hysteria/core/v2 v2.7.0
 	github.com/apernet/hysteria/extras/v2 v2.6.4
 	github.com/beevik/ntp v1.4.4-0.20240716062501-06ef196b89ec
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-acme/lego/v4 v4.25.2
 	github.com/go-resty/resty/v2 v2.16.5
 	github.com/juju/ratelimit v1.0.2
-	github.com/sagernet/sing v0.8.0-beta.6
-	github.com/sagernet/sing-box v1.13.0
+	github.com/sagernet/sing v0.8.0-beta.16
+	github.com/sagernet/sing-box v1.13.2
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/viper v1.19.0
 	github.com/vmihailenco/msgpack/v5 v5.4.1
-	github.com/xtls/xray-core v1.251202.0
+	github.com/xtls/xray-core v1.260206.0
 	go.uber.org/zap v1.27.0
-	golang.org/x/crypto v0.44.0
-	golang.org/x/sys v0.38.0
-	google.golang.org/protobuf v1.36.10
+	golang.org/x/crypto v0.48.0
+	golang.org/x/sys v0.41.0
+	google.golang.org/protobuf v1.36.11
 )
 
 require (
-	cloud.google.com/go/auth v0.16.2 // indirect
+	cloud.google.com/go/auth v0.16.5 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	filippo.io/edwards25519 v1.1.0 // indirect
@@ -64,7 +62,7 @@ require (
 	github.com/andybalholm/brotli v1.1.0 // indirect
 	github.com/anthropics/anthropic-sdk-go v1.14.0 // indirect
 	github.com/anytls/sing-anytls v0.0.11 // indirect
-	github.com/apernet/quic-go v0.54.1-0.20250907230547-eb32f8aec5e2 // indirect
+	github.com/apernet/quic-go v0.59.1-0.20260217092621-db4786c77a22 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.36.6 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.29.18 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.71 // indirect
@@ -87,8 +85,9 @@ require (
 	github.com/caddyserver/certmagic v0.23.0 // indirect
 	github.com/caddyserver/zerossl v0.1.3 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/clbanning/mxj/v2 v2.7.0 // indirect
-	github.com/cloudflare/circl v1.6.1 // indirect
+	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/coder/websocket v1.8.13 // indirect
 	github.com/coreos/go-iptables v0.7.1-0.20240112124308-65c67c9f46e6 // indirect
 	github.com/cretz/bine v0.2.0 // indirect
@@ -96,7 +95,6 @@ require (
 	github.com/database64128/tfo-go/v2 v2.3.1 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dblohm7/wingoes v0.0.0-20240119213807-a09d6be7affa // indirect
-	github.com/dgryski/go-metro v0.0.0-20211217172704-adc40b04c140 // indirect
 	github.com/digitalocean/go-smbios v0.0.0-20180907143718-390a4f403a8e // indirect
 	github.com/dimchansky/utfbom v1.1.1 // indirect
 	github.com/dnsimple/dnsimple-go/v4 v4.0.0 // indirect
@@ -125,7 +123,7 @@ require (
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/godbus/dbus/v5 v5.1.1-0.20230522191255-76236955d466 // indirect
 	github.com/gofrs/flock v0.12.1 // indirect
-	github.com/gofrs/uuid/v5 v5.3.2 // indirect
+	github.com/gofrs/uuid/v5 v5.4.0 // indirect
 	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect
 	github.com/golang-jwt/jwt/v5 v5.2.2 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
@@ -137,7 +135,7 @@ require (
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
-	github.com/googleapis/gax-go/v2 v2.14.2 // indirect
+	github.com/googleapis/gax-go/v2 v2.15.0 // indirect
 	github.com/gophercloud/gophercloud v1.14.1 // indirect
 	github.com/gophercloud/utils v0.0.0-20231010081019-80377eca5d56 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
@@ -159,7 +157,7 @@ require (
 	github.com/k0kubun/go-ansi v0.0.0-20180517002512-3bf9e2903213 // indirect
 	github.com/keybase/go-keychain v0.0.1 // indirect
 	github.com/klauspost/compress v1.17.11 // indirect
-	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
+	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/kolo/xmlrpc v0.0.0-20220921171641-a4b6fa1dd06b // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/labbsr0x/bindman-dns-webhook v1.0.2 // indirect
@@ -180,7 +178,7 @@ require (
 	github.com/mdlayher/socket v0.5.1 // indirect
 	github.com/metacubex/utls v1.8.3 // indirect
 	github.com/mholt/acmez/v3 v3.1.2 // indirect
-	github.com/miekg/dns v1.1.68 // indirect
+	github.com/miekg/dns v1.1.72 // indirect
 	github.com/mimuret/golang-iij-dpf v0.9.1 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/mitchellh/go-ps v1.0.0 // indirect
@@ -207,15 +205,14 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.2 // indirect
 	github.com/peterhellberg/link v1.2.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
-	github.com/pires/go-proxyproto v0.8.1 // indirect
+	github.com/pires/go-proxyproto v0.11.0 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/pquerna/otp v1.5.0 // indirect
 	github.com/prometheus-community/pro-bing v0.4.0 // indirect
-	github.com/quic-go/qpack v0.5.1 // indirect
-	github.com/quic-go/quic-go v0.56.0 // indirect
-	github.com/refraction-networking/utls v1.8.1 // indirect
+	github.com/quic-go/qpack v0.6.0 // indirect
+	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/regfish/regfish-dnsapi-go v0.1.1 // indirect
 	github.com/riobard/go-bloom v0.0.0-20200614022211-cdc8013cb5b3 // indirect
 	github.com/sacloud/api-client-go v0.3.2 // indirect
@@ -229,9 +226,9 @@ require (
 	github.com/sagernet/gvisor v0.0.0-20250811-sing-box-mod.1 // indirect
 	github.com/sagernet/netlink v0.0.0-20240612041022-b9a21c07ac6a // indirect
 	github.com/sagernet/nftables v0.3.0-beta.4 // indirect
-	github.com/sagernet/quic-go v0.55.0-sing-box-mod.2 // indirect
+	github.com/sagernet/quic-go v0.59.0-sing-box-mod.2 // indirect
 	github.com/sagernet/sing-mux v0.3.3 // indirect
-	github.com/sagernet/sing-quic v0.6.0-beta.4 // indirect
+	github.com/sagernet/sing-quic v0.6.0-beta.13 // indirect
 	github.com/sagernet/sing-shadowsocks v0.2.8 // indirect
 	github.com/sagernet/sing-shadowsocks2 v0.2.1 // indirect
 	github.com/sagernet/sing-shadowtls v0.2.1-0.20250503051639-fcd445d33c11 // indirect
@@ -244,7 +241,6 @@ require (
 	github.com/sagikazarmark/locafero v0.4.0 // indirect
 	github.com/sagikazarmark/slog-shim v0.1.0 // indirect
 	github.com/scaleway/scaleway-sdk-go v1.0.0-beta.34 // indirect
-	github.com/seiflotfy/cuckoofilter v0.0.0-20240715131351-a2f2c23f1771 // indirect
 	github.com/selectel/domains-go v1.1.0 // indirect
 	github.com/selectel/go-selvpcclient/v4 v4.1.0 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
@@ -296,40 +292,43 @@ require (
 	go.mongodb.org/mongo-driver v1.13.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 // indirect
-	go.opentelemetry.io/otel v1.38.0 // indirect
-	go.opentelemetry.io/otel/metric v1.38.0 // indirect
-	go.opentelemetry.io/otel/trace v1.38.0 // indirect
+	go.opentelemetry.io/otel v1.39.0 // indirect
+	go.opentelemetry.io/otel/metric v1.39.0 // indirect
+	go.opentelemetry.io/otel/trace v1.39.0 // indirect
 	go.uber.org/atomic v1.10.0 // indirect
-	go.uber.org/mock v0.5.2 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/ratelimit v0.3.1 // indirect
 	go.uber.org/zap/exp v0.3.0 // indirect
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745 // indirect
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/exp v0.0.0-20250911091902-df9299821621 // indirect
-	golang.org/x/mod v0.29.0 // indirect
-	golang.org/x/net v0.47.0 // indirect
-	golang.org/x/oauth2 v0.32.0 // indirect
-	golang.org/x/sync v0.18.0 // indirect
-	golang.org/x/term v0.37.0 // indirect
-	golang.org/x/text v0.31.0 // indirect
+	golang.org/x/mod v0.32.0 // indirect
+	golang.org/x/net v0.50.0 // indirect
+	golang.org/x/oauth2 v0.34.0 // indirect
+	golang.org/x/sync v0.19.0 // indirect
+	golang.org/x/term v0.40.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
-	golang.org/x/tools v0.38.0 // indirect
+	golang.org/x/tools v0.41.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173 // indirect
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
-	google.golang.org/api v0.242.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20251022142026-3a174f9686a8 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20251022142026-3a174f9686a8 // indirect
-	google.golang.org/grpc v1.77.0 // indirect
+	google.golang.org/api v0.249.0 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20251202230838-ff82c1b0f217 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
+	google.golang.org/grpc v1.79.1 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/ns1/ns1-go.v2 v2.14.4 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	gvisor.dev/gvisor v0.0.0-20250428193742-2d800c3129d5 // indirect
+	gvisor.dev/gvisor v0.0.0-20260122175437-89a5d21be8f0 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
 
-replace github.com/sagernet/sing-box v1.13.0 => github.com/wyx2685/sing-box_mod v1.13.0-alpha.5.0.20251202212447-8d054dcd8bfe
+replace github.com/sagernet/sing-box => github.com/wyx2685/sing-box_mod v1.13.0-alpha.5.0.20251202212447-8d054dcd8bfe
 
-replace github.com/xtls/xray-core v1.251202.0 => github.com/wyx2685/xray-core v0.0.0-20251202200223-63db1dc9e9e2
+replace github.com/xtls/xray-core => github.com/wyx2685/xray-core v0.0.0-20260301200735-965d62dfa5de
+
+replace github.com/sagernet/sing => github.com/sagernet/sing v0.8.0-beta.6
+
+replace github.com/apernet/quic-go => github.com/apernet/quic-go v0.57.2-0.20260111184307-eec823306178

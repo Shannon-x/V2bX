@@ -10,7 +10,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/v2bx
+  IMAGE_NAME: shannon-x/v2bx
 
 jobs:
   build:

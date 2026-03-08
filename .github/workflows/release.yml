@@ -172,11 +172,22 @@ jobs:
           name: V2bX-${{ steps.get_filename.outputs.ASSET_NAME }}
           path: |
             ./V2bX-${{ steps.get_filename.outputs.ASSET_NAME }}/*
+      - name: Determine Release Tag
+        id: release_tag
+        run: |
+          if [ "${{ github.event_name }}" == "release" ]; then
+            echo "TAG_NAME=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "RELEASE_NAME=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "TAG_NAME=latest" >> $GITHUB_OUTPUT
+            echo "RELEASE_NAME=Latest Auto-build" >> $GITHUB_OUTPUT
+          fi
       - name: Upload binaries to release
         uses: svenstaro/upload-release-action@v2
-        if: github.event_name == 'release'
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: ./V2bX-${{ steps.get_filename.outputs.ASSET_NAME }}.zip*
-          tag: ${{ github.ref }}
+          tag: ${{ steps.release_tag.outputs.TAG_NAME }}
+          release_name: ${{ steps.release_tag.outputs.RELEASE_NAME }}
+          overwrite: true
           file_glob: true

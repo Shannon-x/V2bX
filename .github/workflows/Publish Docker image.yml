@@ -4,6 +4,9 @@ on:
   workflow_dispatch:
   release:
     types: [published]
+  push:
+    branches:
+      - 'dev_new'
   pull_request:
     branches:
       - 'dev_new'

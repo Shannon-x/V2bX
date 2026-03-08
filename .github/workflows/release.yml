@@ -179,16 +179,12 @@ jobs:
             echo "TAG_NAME=${{ github.ref_name }}" >> $GITHUB_OUTPUT
             echo "RELEASE_NAME=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
-            echo "TAG_NAME=latest" >> $GITHUB_OUTPUT
-            echo "RELEASE_NAME=Latest Auto-build" >> $GITHUB_OUTPUT
+            # 使用日期时间生成版本号
+            VERSION_TAG="v1.1.$(date -u +'%Y%m%d%H%M')"
+            COMMIT_MSG=$(git log -1 --pretty=%s)
+            echo "TAG_NAME=${VERSION_TAG}" >> $GITHUB_OUTPUT
+            echo "RELEASE_NAME=${VERSION_TAG} - ${COMMIT_MSG}" >> $GITHUB_OUTPUT
           fi
-      - name: Move latest tag to current commit
-        if: steps.release_tag.outputs.TAG_NAME == 'latest'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git tag -f latest
-          git push -f origin latest
       - name: Upload binaries to release
         uses: svenstaro/upload-release-action@v2
         with:
@@ -198,3 +194,10 @@ jobs:
           release_name: ${{ steps.release_tag.outputs.RELEASE_NAME }}
           overwrite: true
           file_glob: true
+      - name: Update latest tag
+        if: github.event_name != 'release'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git tag -f latest
+          git push -f origin latest

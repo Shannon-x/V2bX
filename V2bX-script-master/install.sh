@@ -138,8 +138,12 @@ install_V2bX() {
     cd /usr/local/V2bX/
 
     if  [ $# == 0 ] ;then
-        last_version="latest"
-        echo -e "开始安装 V2bX 最新版本"
+        last_version=$(curl -Ls "https://api.github.com/repos/Shannon-x/V2bX/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        if [[ ! -n "$last_version" ]]; then
+            echo -e "${red}检测 V2bX 版本失败，可能是超出 Github API 限制，请稍后再试${plain}"
+            exit 1
+        fi
+        echo -e "检测到 V2bX 最新版本：${last_version}，开始安装"
     else
         last_version=$1
         echo -e "开始安装 V2bX ${last_version}"

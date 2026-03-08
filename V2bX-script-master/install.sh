@@ -41,6 +41,14 @@ elif [[ $arch == "aarch64" || $arch == "arm64" ]]; then
     arch="arm64-v8a"
 elif [[ $arch == "s390x" ]]; then
     arch="s390x"
+elif [[ $arch == "riscv64" ]]; then
+    arch="riscv64"
+elif [[ $arch == "armv7l" || $arch == "armv7" ]]; then
+    arch="arm32-v7a"
+elif [[ $arch == "armv6l" ]]; then
+    arch="arm32-v6"
+elif [[ $arch == "armv5tel" || $arch == "armv5l" ]]; then
+    arch="arm32-v5"
 else
     arch="64"
     echo -e "${red}检测架构失败，使用默认架构: ${arch}${plain}"
@@ -91,13 +99,11 @@ install_base() {
         update-ca-certificates >/dev/null 2>&1
     elif [[ x"${release}" == x"ubuntu" ]]; then
         apt-get update -y >/dev/null 2>&1
-        apt install wget curl unzip tar cron socat -y >/dev/null 2>&1
-        apt-get install ca-certificates wget -y >/dev/null 2>&1
+        apt install wget curl unzip tar cron socat ca-certificates -y >/dev/null 2>&1
         update-ca-certificates >/dev/null 2>&1
     elif [[ x"${release}" == x"arch" ]]; then
         pacman -Sy --noconfirm >/dev/null 2>&1
-        pacman -S --noconfirm --needed wget curl unzip tar cron socat >/dev/null 2>&1
-        pacman -S --noconfirm --needed ca-certificates wget >/dev/null 2>&1
+        pacman -S --noconfirm --needed wget curl unzip tar cron socat ca-certificates >/dev/null 2>&1
     fi
 }
 
@@ -144,9 +150,14 @@ install_V2bX() {
             exit 1
         fi
     else
-        last_version=$1
+        if [[ "$1" == "latest" ]]; then
+            last_version="latest"
+            echo -e "开始安装 V2bX 最新滚动构建版本"
+        else
+            last_version=$1
+            echo -e "开始安装 V2bX $1"
+        fi
         url="https://github.com/Shannon-x/V2bX/releases/download/${last_version}/V2bX-linux-${arch}.zip"
-        echo -e "开始安装 V2bX $1"
         wget --no-check-certificate -N --progress=bar -O /usr/local/V2bX/V2bX-linux.zip ${url}
         if [[ $? -ne 0 ]]; then
             echo -e "${red}下载 V2bX $1 失败，请确保此版本存在${plain}"
@@ -154,7 +165,7 @@ install_V2bX() {
         fi
     fi
 
-    unzip V2bX-linux.zip
+    unzip -o V2bX-linux.zip
     rm V2bX-linux.zip -f
     chmod +x V2bX
     mkdir /etc/V2bX/ -p
@@ -162,11 +173,11 @@ install_V2bX() {
     cp geosite.dat /etc/V2bX/
     if [[ x"${release}" == x"alpine" ]]; then
         rm /etc/init.d/V2bX -f
-        cat <<EOF > /etc/init.d/V2bX
+        cat <<'INITEOF' > /etc/init.d/V2bX
 #!/sbin/openrc-run
 
 name="V2bX"
-description="V2bX"
+description="V2bX Service"
 
 command="/usr/local/V2bX/V2bX"
 command_args="server"
@@ -178,13 +189,13 @@ command_background="yes"
 depend() {
         need net
 }
-EOF
+INITEOF
         chmod +x /etc/init.d/V2bX
         rc-update add V2bX default
         echo -e "${green}V2bX ${last_version}${plain} 安装完成，已设置开机自启"
     else
         rm /etc/systemd/system/V2bX.service -f
-        cat <<EOF > /etc/systemd/system/V2bX.service
+        cat <<'SERVICEEOF' > /etc/systemd/system/V2bX.service
 [Unit]
 Description=V2bX Service
 After=network.target nss-lookup.target
@@ -205,7 +216,7 @@ RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SERVICEEOF
         systemctl daemon-reload
         systemctl stop V2bX
         systemctl enable V2bX
@@ -215,7 +226,7 @@ EOF
     if [[ ! -f /etc/V2bX/config.json ]]; then
         cp config.json /etc/V2bX/
         echo -e ""
-        echo -e "全新安装，请先参看教程：https://v2bx.v-50.me/，配置必要的内容"
+        echo -e "全新安装，请先参看教程：https://github.com/Shannon-x/V2bX，配置必要的内容"
         first_install=true
     else
         if [[ x"${release}" == x"alpine" ]]; then
@@ -229,7 +240,7 @@ EOF
         if [[ $? == 0 ]]; then
             echo -e "${green}V2bX 重启成功${plain}"
         else
-            echo -e "${red}V2bX 可能启动失败，请稍后使用 V2bX log 查看日志信息，若无法启动，则可能更改了配置格式，请前往 wiki 查看：https://github.com/Shannon-x/V2bX/wiki${plain}"
+            echo -e "${red}V2bX 可能启动失败，请稍后使用 V2bX log 查看日志信息${plain}"
         fi
         first_install=false
     fi
@@ -273,7 +284,6 @@ EOF
     echo "V2bX uninstall    - 卸载 V2bX"
     echo "V2bX version      - 查看 V2bX 版本"
     echo "------------------------------------------"
-    # analytics removed for fork
     # 首次安装询问是否生成配置文件
     if [[ $first_install == true ]]; then
         read -rp "检测到你为第一次安装V2bX,是否自动直接生成配置文件？(y/n): " if_generate

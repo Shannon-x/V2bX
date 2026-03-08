@@ -27,21 +27,44 @@ jobs:
         run: |
           # 启用 GOPROXY
           go env -w GOPROXY=https://goproxy.cn,direct
-          
+
           # 使用 sed 将 replace 指令重新指向 main / dev-next 分支
           # 这样 go mod tidy 会自动拉取并生成最新的伪版本号 (pseudo-version)
           sed -i -E 's|replace github.com/xtls/xray-core.*|replace github.com/xtls/xray-core => github.com/wyx2685/xray-core main|' go.mod
           sed -i -E 's|replace github.com/sagernet/sing-box.*|replace github.com/sagernet/sing-box => github.com/wyx2685/sing-box_mod dev-next|' go.mod
-          
+
+          # 更新 hysteria core 和 extras 到最新版本
+          echo "Checking for hysteria updates..."
+          LATEST_HY_CORE=$(go list -m -versions github.com/apernet/hysteria/core/v2 2>/dev/null | tr ' ' '\n' | tail -1)
+          LATEST_HY_EXTRAS=$(go list -m -versions github.com/apernet/hysteria/extras/v2 2>/dev/null | tr ' ' '\n' | tail -1)
+          if [ -n "$LATEST_HY_CORE" ]; then
+            echo "Latest hysteria core: $LATEST_HY_CORE"
+            go get "github.com/apernet/hysteria/core/v2@${LATEST_HY_CORE}"
+          fi
+          if [ -n "$LATEST_HY_EXTRAS" ]; then
+            echo "Latest hysteria extras: $LATEST_HY_EXTRAS"
+            go get "github.com/apernet/hysteria/extras/v2@${LATEST_HY_EXTRAS}"
+          fi
+
+          # 更新 quic-go replace 指令以匹配 hysteria 的依赖
+          # 从 hysteria core 的 go.mod 获取正确的 quic-go 版本
+          if [ -n "$LATEST_HY_CORE" ]; then
+            HY_QUIC_VER=$(go mod graph | grep "hysteria/core/v2.*apernet/quic-go" | head -1 | awk -F'@' '{print $NF}')
+            if [ -n "$HY_QUIC_VER" ]; then
+              echo "Updating quic-go replace to: $HY_QUIC_VER"
+              sed -i -E "s|replace github.com/apernet/quic-go.*|replace github.com/apernet/quic-go => github.com/apernet/quic-go ${HY_QUIC_VER}|" go.mod
+            fi
+          fi
+
           echo "Run go mod tidy to resolve latest pseudo-versions..."
           go mod tidy
-          
+
           # 验证更新后的依赖是否能通过编译
           echo "Verifying build with updated cores..."
-          export GOEXPERIMENT=jsonv2 
+          export GOEXPERIMENT=jsonv2
           go build -v -o V2bX_test -tags "sing xray hysteria2 with_quic with_grpc with_utls with_wireguard with_acme with_gvisor"
           rm -f V2bX_test
-          
+
           # 检查文件是否被修改
           if git diff --quiet go.mod go.sum; then
             echo "No updates available for kernels."
@@ -49,7 +72,8 @@ jobs:
           else
             echo "Kernel updates found!"
             echo "CHANGED=true" >> $GITHUB_ENV
-            cat go.mod | grep replace
+            echo "--- Updated dependencies ---"
+            cat go.mod | grep -E "hysteria|replace"
           fi
 
       - name: Commit and Create Release
@@ -59,20 +83,20 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
+
           # 提交依赖更新
           git add go.mod go.sum
-          git commit -m "build(deps): auto-update core dependencies [skip ci]"
-          
+          git commit -m "build(deps): auto-update core dependencies (xray/sing-box/hysteria)"
+
           # 推送到 dev_new
           git push origin dev_new
-          
+
           # 使用当前日期生成版本号作为 tag
           VERSION_TAG="v1.0.$(date +'%Y%m%d%H%M')"
           echo "Generating new release tag: $VERSION_TAG"
-          
+
           # 创建 GitHub Release，这将自动触发 Release.yml 中的构建和 Docker 发布流程
           gh release create $VERSION_TAG \
             --title "Core Update $VERSION_TAG" \
-            --notes "Automated release due to upstream core dependency updates (xray-core / sing-box_mod)." \
+            --notes "Automated release due to upstream core dependency updates (xray-core / sing-box / hysteria2)." \
             --target dev_new

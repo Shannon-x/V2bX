@@ -59,9 +59,9 @@ fi
 # 检查系统是否有 IPv6 地址
 check_ipv6_support() {
     if ip -6 addr | grep -q "inet6"; then
-        echo "1"  # 支持 IPv6
+        echo "1"
     else
-        echo "0"  # 不支持 IPv6
+        echo "0"
     fi
 }
 
@@ -108,7 +108,7 @@ install() {
 
 update() {
     if [[ $# == 0 ]]; then
-        echo && echo -n -e "输入指定版本(默认最新版): " && read version
+        echo && echo -n -e "输入指定版本(默认最新版，输入 latest 使用滚动构建版): " && read version
     else
         version=$2
     fi
@@ -422,6 +422,10 @@ show_V2bX_version() {
     fi
 }
 
+# =====================================================
+# 配置文件生成逻辑（内联版本，与 initconfig.sh 保持一致）
+# =====================================================
+
 add_node_config() {
     echo -e "${green}请选择节点核心类型：${plain}"
     echo -e "${green}1. xray${plain}"
@@ -439,19 +443,35 @@ add_node_config() {
         core_hysteria2=true
     else
         echo "无效的选择。请选择 1 2 3。"
-        continue
+        return 1
     fi
     while true; do
         read -rp "请输入节点Node ID：" NodeID
-        # 判断NodeID是否为正整数
         if [[ "$NodeID" =~ ^[0-9]+$ ]]; then
-            break  # 输入正确，退出循环
+            break
         else
             echo "错误：请输入正确的数字作为Node ID。"
         fi
     done
 
-    if [ "$core_hysteria2" = true ] && [ "$core_xray" = false ] && [ "$core_sing" = false ]; then
+    # API 版本选择
+    api_version=1
+    if [ "$fixed_api_version" != "" ]; then
+        api_version=$fixed_api_version
+    else
+        echo -e "${yellow}请选择面板 API 版本：${plain}"
+        echo -e "${green}1. V1 UniProxy (默认，兼容大部分面板)${plain}"
+        echo -e "${green}2. V2 Flat API (适用于 Shannon-x/v2board)${plain}"
+        read -rp "请输入 [默认1]：" api_ver_input
+        if [ "$api_ver_input" == "2" ]; then
+            api_version=2
+        fi
+        if [ "$fixed_api_info" = true ]; then
+            fixed_api_version=$api_version
+        fi
+    fi
+
+    if [ "$core_hysteria2" = true ] && [ "$core_xray" != true ] && [ "$core_sing" != true ]; then
         NodeType="hysteria2"
     else
         echo -e "${yellow}请选择节点传输协议：${plain}"
@@ -462,10 +482,10 @@ add_node_config() {
             echo -e "${green}4. Hysteria${plain}"
             echo -e "${green}5. Hysteria2${plain}"
         fi
-        if [ "$core_hysteria2" == true ] && [ "$core_sing" = false ]; then
+        if [ "$core_hysteria2" == true ] && [ "$core_sing" != true ]; then
             echo -e "${green}5. Hysteria2${plain}"
         fi
-        echo -e "${green}6. Trojan${plain}"  
+        echo -e "${green}6. Trojan${plain}"
         if [ "$core_sing" == true ]; then
             echo -e "${green}7. Tuic${plain}"
             echo -e "${green}8. AnyTLS${plain}"
@@ -483,15 +503,19 @@ add_node_config() {
             * ) NodeType="shadowsocks" ;;
         esac
     fi
-    fastopen=true
+
+    # TLS/Reality 配置
+    isreality=""
+    istls=""
+    enable_tfo=true
     if [ "$NodeType" == "vless" ]; then
         read -rp "请选择是否为reality节点？(y/n)" isreality
     elif [ "$NodeType" == "hysteria" ] || [ "$NodeType" == "hysteria2" ] || [ "$NodeType" == "tuic" ] || [ "$NodeType" == "anytls" ]; then
-        fastopen=false
+        enable_tfo=false
         istls="y"
     fi
 
-    if [[ "$isreality" != "y" && "$isreality" != "Y" &&  "$istls" != "y" ]]; then
+    if [[ "$isreality" != "y" && "$isreality" != "Y" && "$istls" != "y" ]]; then
         read -rp "请选择是否进行TLS配置？(y/n)" istls
     fi
 
@@ -501,26 +525,29 @@ add_node_config() {
         echo -e "${yellow}请选择证书申请模式：${plain}"
         echo -e "${green}1. http模式自动申请，节点域名已正确解析${plain}"
         echo -e "${green}2. dns模式自动申请，需填入正确域名服务商API参数${plain}"
-        echo -e "${green}3. self模式，自签证书或提供已有证书文件${plain}"
+        echo -e "${green}3. file模式，自签证书或提供已有证书文件${plain}"
         read -rp "请输入：" certmode
         case "$certmode" in
             1 ) certmode="http" ;;
             2 ) certmode="dns" ;;
-            3 ) certmode="self" ;;
+            3 ) certmode="file" ;;
         esac
         read -rp "请输入节点证书域名(example.com)：" certdomain
-        if [ "$certmode" != "http" ]; then
-            echo -e "${red}请手动修改配置文件后重启V2bX！${plain}"
+        if [ "$certmode" == "dns" ]; then
+            echo -e "${red}请在配置生成后手动修改 DNSEnv 参数，然后重启V2bX！${plain}"
         fi
     fi
+
     ipv6_support=$(check_ipv6_support)
     listen_ip="0.0.0.0"
     if [ "$ipv6_support" -eq 1 ]; then
         listen_ip="::"
     fi
+
     node_config=""
-    if [ "$core_type" == "1" ]; then 
-    node_config=$(cat <<EOF
+    if [ "$core_type" == "1" ]; then
+        # Xray 节点配置
+        node_config=$(cat <<EOF
 {
             "Core": "$core",
             "ApiHost": "$ApiHost",
@@ -528,20 +555,22 @@ add_node_config() {
             "NodeID": $NodeID,
             "NodeType": "$NodeType",
             "Timeout": 30,
+            "ApiVersion": $api_version,
             "ListenIP": "0.0.0.0",
             "SendIP": "0.0.0.0",
             "DeviceOnlineMinTraffic": 200,
-            "MinReportTraffic": 0,
+            "ReportMinTraffic": 0,
             "EnableProxyProtocol": false,
             "EnableUot": true,
             "EnableTFO": true,
             "DNSType": "UseIPv4",
+            "DisableSniffing": false,
             "CertConfig": {
                 "CertMode": "$certmode",
                 "RejectUnknownSni": false,
                 "CertDomain": "$certdomain",
-                "CertFile": "/etc/V2bX/fullchain.cer",
-                "KeyFile": "/etc/V2bX/cert.key",
+                "CertFile": "/etc/V2bX/${certdomain}.cert.pem",
+                "KeyFile": "/etc/V2bX/${certdomain}.key.pem",
                 "Email": "v2bx@github.com",
                 "Provider": "cloudflare",
                 "DNSEnv": {
@@ -552,7 +581,8 @@ add_node_config() {
 EOF
 )
     elif [ "$core_type" == "2" ]; then
-    node_config=$(cat <<EOF
+        # Sing 节点配置
+        node_config=$(cat <<EOF
 {
             "Core": "$core",
             "ApiHost": "$ApiHost",
@@ -560,18 +590,20 @@ EOF
             "NodeID": $NodeID,
             "NodeType": "$NodeType",
             "Timeout": 30,
+            "ApiVersion": $api_version,
             "ListenIP": "$listen_ip",
             "SendIP": "0.0.0.0",
             "DeviceOnlineMinTraffic": 200,
-            "MinReportTraffic": 0,
-            "TCPFastOpen": $fastopen,
-            "SniffEnabled": true,
+            "ReportMinTraffic": 0,
+            "EnableTFO": $enable_tfo,
+            "EnableSniff": true,
+            "SniffOverrideDestination": true,
             "CertConfig": {
                 "CertMode": "$certmode",
                 "RejectUnknownSni": false,
                 "CertDomain": "$certdomain",
-                "CertFile": "/etc/V2bX/fullchain.cer",
-                "KeyFile": "/etc/V2bX/cert.key",
+                "CertFile": "/etc/V2bX/${certdomain}.cert.pem",
+                "KeyFile": "/etc/V2bX/${certdomain}.key.pem",
                 "Email": "v2bx@github.com",
                 "Provider": "cloudflare",
                 "DNSEnv": {
@@ -582,7 +614,8 @@ EOF
 EOF
 )
     elif [ "$core_type" == "3" ]; then
-    node_config=$(cat <<EOF
+        # Hysteria2 节点配置
+        node_config=$(cat <<EOF
 {
             "Core": "$core",
             "ApiHost": "$ApiHost",
@@ -591,16 +624,17 @@ EOF
             "NodeType": "$NodeType",
             "Hysteria2ConfigPath": "/etc/V2bX/hy2config.yaml",
             "Timeout": 30,
+            "ApiVersion": $api_version,
             "ListenIP": "",
             "SendIP": "0.0.0.0",
             "DeviceOnlineMinTraffic": 200,
-            "MinReportTraffic": 0,
+            "ReportMinTraffic": 0,
             "CertConfig": {
                 "CertMode": "$certmode",
                 "RejectUnknownSni": false,
                 "CertDomain": "$certdomain",
-                "CertFile": "/etc/V2bX/fullchain.cer",
-                "KeyFile": "/etc/V2bX/cert.key",
+                "CertFile": "/etc/V2bX/${certdomain}.cert.pem",
+                "KeyFile": "/etc/V2bX/${certdomain}.key.pem",
                 "Email": "v2bx@github.com",
                 "Provider": "cloudflare",
                 "DNSEnv": {
@@ -617,23 +651,24 @@ EOF
 generate_config_file() {
     echo -e "${yellow}V2bX 配置文件生成向导${plain}"
     echo -e "${red}请阅读以下注意事项：${plain}"
-    echo -e "${red}1. 目前该功能正处测试阶段${plain}"
-    echo -e "${red}2. 生成的配置文件会保存到 /etc/V2bX/config.json${plain}"
-    echo -e "${red}3. 原来的配置文件会保存到 /etc/V2bX/config.json.bak${plain}"
-    echo -e "${red}4. 目前仅部分支持TLS${plain}"
-    echo -e "${red}5. 使用此功能生成的配置文件会自带审计，确定继续？(y/n)${plain}"
+    echo -e "${red}1. 生成的配置文件会保存到 /etc/V2bX/config.json${plain}"
+    echo -e "${red}2. 原来的配置文件会保存到 /etc/V2bX/config.json.bak${plain}"
+    echo -e "${red}3. 支持 Xray / Sing-box / Hysteria2 核心${plain}"
+    echo -e "${red}4. Xray 核心已内置高性能连接参数优化${plain}"
+    echo -e "${red}5. 使用此功能生成的配置文件会自带审计规则，确定继续？(y/n)${plain}"
     read -rp "请输入：" continue_prompt
     if [[ "$continue_prompt" =~ ^[Nn][Oo]? ]]; then
-        exit 0
+        return 0
     fi
-    
+
     nodes_config=()
     first_node=true
     core_xray=false
     core_sing=false
+    core_hysteria2=false
     fixed_api_info=false
-    check_api=false
-    
+    fixed_api_version=""
+
     while true; do
         if [ "$first_node" = true ]; then
             read -rp "请输入机场网址(https://example.com)：" ApiHost
@@ -641,7 +676,7 @@ generate_config_file() {
             read -rp "是否设置固定的机场网址和API Key？(y/n)" fixed_api
             if [ "$fixed_api" = "y" ] || [ "$fixed_api" = "Y" ]; then
                 fixed_api_info=true
-                echo -e "${red}成功固定地址${plain}"
+                echo -e "${green}成功固定地址${plain}"
             fi
             first_node=false
             add_node_config
@@ -650,7 +685,7 @@ generate_config_file() {
             if [[ "$continue_adding_node" =~ ^[Nn][Oo]? ]]; then
                 break
             elif [ "$fixed_api_info" = false ]; then
-                read -rp "请输入机场网址：" ApiHost
+                read -rp "请输入机场网址(https://example.com)：" ApiHost
                 read -rp "请输入面板对接API Key：" ApiKey
             fi
             add_node_config
@@ -660,7 +695,7 @@ generate_config_file() {
     # 初始化核心配置数组
     cores_config="["
 
-    # 检查并添加xray核心配置
+    # Xray 核心配置 - 带高性能连接参数
     if [ "$core_xray" = true ]; then
         cores_config+="
     {
@@ -669,12 +704,21 @@ generate_config_file() {
             \"Level\": \"error\",
             \"ErrorPath\": \"/etc/V2bX/error.log\"
         },
+        \"AssetPath\": \"/etc/V2bX/\",
+        \"DnsConfigPath\": \"/etc/V2bX/dns.json\",
         \"OutboundConfigPath\": \"/etc/V2bX/custom_outbound.json\",
-        \"RouteConfigPath\": \"/etc/V2bX/route.json\"
+        \"RouteConfigPath\": \"/etc/V2bX/route.json\",
+        \"XrayConnectionConfig\": {
+            \"handshake\": 4,
+            \"connIdle\": 30,
+            \"uplinkOnly\": 2,
+            \"downlinkOnly\": 4,
+            \"bufferSize\": 64
+        }
     },"
     fi
 
-    # 检查并添加sing核心配置
+    # Sing 核心配置
     if [ "$core_sing" = true ]; then
         cores_config+="
     {
@@ -692,7 +736,7 @@ generate_config_file() {
     },"
     fi
 
-    # 检查并添加hysteria2核心配置
+    # Hysteria2 核心配置
     if [ "$core_hysteria2" = true ]; then
         cores_config+="
     {
@@ -709,9 +753,11 @@ generate_config_file() {
 
     # 切换到配置文件目录
     cd /etc/V2bX
-    
+
     # 备份旧的配置文件
-    mv config.json config.json.bak
+    if [ -f config.json ]; then
+        mv config.json config.json.bak
+    fi
     nodes_config_str="${nodes_config[*]}"
     formatted_nodes_config="${nodes_config_str%,}"
 
@@ -726,91 +772,98 @@ generate_config_file() {
     "Nodes": [$formatted_nodes_config]
 }
 EOF
-    
+
+    # 创建 dns.json (Xray DNS)
+    cat <<'EOF' > /etc/V2bX/dns.json
+{
+    "servers": [
+        "1.1.1.1",
+        "8.8.8.8",
+        "localhost"
+    ],
+    "tag": "dns_inbound"
+}
+EOF
+
     # 创建 custom_outbound.json 文件
-    cat <<EOF > /etc/V2bX/custom_outbound.json
-    [
+    cat <<'EOF' > /etc/V2bX/custom_outbound.json
+[
+    {
+        "tag": "IPv4_out",
+        "protocol": "freedom",
+        "settings": {
+            "domainStrategy": "UseIPv4v6"
+        }
+    },
+    {
+        "tag": "IPv6_out",
+        "protocol": "freedom",
+        "settings": {
+            "domainStrategy": "UseIPv6"
+        }
+    },
+    {
+        "protocol": "blackhole",
+        "tag": "block"
+    }
+]
+EOF
+
+    # 创建 route.json 文件
+    cat <<'EOF' > /etc/V2bX/route.json
+{
+    "domainStrategy": "AsIs",
+    "rules": [
         {
-            "tag": "IPv4_out",
-            "protocol": "freedom",
-            "settings": {
-                "domainStrategy": "UseIPv4v6"
-            }
+            "type": "field",
+            "outboundTag": "block",
+            "ip": [
+                "geoip:private"
+            ]
         },
         {
-            "tag": "IPv6_out",
-            "protocol": "freedom",
-            "settings": {
-                "domainStrategy": "UseIPv6"
-            }
+            "type": "field",
+            "outboundTag": "block",
+            "domain": [
+                "regexp:(api|ps|sv|offnavi|newvector|ulog\\.imap|newloc)(\\.map|)\\.(baidu|n\\.shifen)\\.com",
+                "regexp:(.+\\.|^)(360|so)\\.(cn|com)",
+                "regexp:(Subject|HELO|SMTP)",
+                "regexp:(torrent|\\.torrent|peer_id=|info_hash|get_peers|find_node|BitTorrent|announce_peer|announce\\.php\\?passkey=)",
+                "regexp:(ed2k|\\.torrent|peer_id=|announce|info_hash|get_peers|find_node|BitTorrent|announce_peer|announce\\.php\\?passkey=|magnet:|xunlei|sandai|Thunder|XLLiveUD|bt_key)",
+                "regexp:(.*\\.||)(guanjia\\.qq\\.com|qqpcmgr|QQPCMGR)",
+                "regexp:(.*\\.||)(rising|kingsoft|duba|xindubawukong|jinshanduba)\\.(com|net|org)",
+                "regexp:(.*\\.||)(netvigator|torproject)\\.(com|cn|net|org)",
+                "regexp:(.*\\.||)(miaozhen|cnzz|talkingdata|umeng)\\.(cn|com)",
+                "regexp:(.*\\.||)(taobao)\\.(com)",
+                "regexp:(.*\\.||)(laomoe|jiyou|ssss|lolicp|vv1234|0z|4321q|868123|ksweb|mm126)\\.(com|cloud|fun|cn|gs|xyz|cc)",
+                "regexp:(flows|miaoko)\\.(pages)\\.(dev)"
+            ]
         },
         {
-            "protocol": "blackhole",
-            "tag": "block"
+            "type": "field",
+            "outboundTag": "block",
+            "ip": [
+                "127.0.0.1/32",
+                "10.0.0.0/8",
+                "fc00::/7",
+                "fe80::/10",
+                "172.16.0.0/12"
+            ]
+        },
+        {
+            "type": "field",
+            "outboundTag": "block",
+            "protocol": [
+                "bittorrent"
+            ]
+        },
+        {
+            "type": "field",
+            "outboundTag": "IPv4_out",
+            "network": "udp,tcp"
         }
     ]
-EOF
-    
-    # 创建 route.json 文件
-    cat <<EOF > /etc/V2bX/route.json
-    {
-        "domainStrategy": "AsIs",
-        "rules": [
-            {
-                "type": "field",
-                "outboundTag": "block",
-                "ip": [
-                    "geoip:private"
-                ]
-            },
-            {
-                "type": "field",
-                "outboundTag": "block",
-                "domain": [
-                    "regexp:(api|ps|sv|offnavi|newvector|ulog.imap|newloc)(.map|).(baidu|n.shifen).com",
-                    "regexp:(.+.|^)(360|so).(cn|com)",
-                    "regexp:(Subject|HELO|SMTP)",
-                    "regexp:(torrent|.torrent|peer_id=|info_hash|get_peers|find_node|BitTorrent|announce_peer|announce.php?passkey=)",
-                    "regexp:(^.@)(guerrillamail|guerrillamailblock|sharklasers|grr|pokemail|spam4|bccto|chacuo|027168).(info|biz|com|de|net|org|me|la)",
-                    "regexp:(.?)(xunlei|sandai|Thunder|XLLiveUD)(.)",
-                    "regexp:(..||)(dafahao|mingjinglive|botanwang|minghui|dongtaiwang|falunaz|epochtimes|ntdtv|falundafa|falungong|wujieliulan|zhengjian).(org|com|net)",
-                    "regexp:(ed2k|.torrent|peer_id=|announce|info_hash|get_peers|find_node|BitTorrent|announce_peer|announce.php?passkey=|magnet:|xunlei|sandai|Thunder|XLLiveUD|bt_key)",
-                    "regexp:(.+.|^)(360).(cn|com|net)",
-                    "regexp:(.*.||)(guanjia.qq.com|qqpcmgr|QQPCMGR)",
-                    "regexp:(.*.||)(rising|kingsoft|duba|xindubawukong|jinshanduba).(com|net|org)",
-                    "regexp:(.*.||)(netvigator|torproject).(com|cn|net|org)",
-                    "regexp:(..||)(visa|mycard|gash|beanfun|bank).",
-                    "regexp:(.*.||)(gov|12377|12315|talk.news.pts.org|creaders|zhuichaguoji|efcc.org|cyberpolice|aboluowang|tuidang|epochtimes|zhengjian|110.qq|mingjingnews|inmediahk|xinsheng|breakgfw|chengmingmag|jinpianwang|qi-gong|mhradio|edoors|renminbao|soundofhope|xizang-zhiye|bannedbook|ntdtv|12321|secretchina|dajiyuan|boxun|chinadigitaltimes|dwnews|huaglad|oneplusnews|epochweekly|cn.rfi).(cn|com|org|net|club|net|fr|tw|hk|eu|info|me)",
-                    "regexp:(.*.||)(miaozhen|cnzz|talkingdata|umeng).(cn|com)",
-                    "regexp:(.*.||)(mycard).(com|tw)",
-                    "regexp:(.*.||)(gash).(com|tw)",
-                    "regexp:(.bank.)",
-                    "regexp:(.*.||)(pincong).(rocks)",
-                    "regexp:(.*.||)(taobao).(com)",
-                    "regexp:(.*.||)(laomoe|jiyou|ssss|lolicp|vv1234|0z|4321q|868123|ksweb|mm126).(com|cloud|fun|cn|gs|xyz|cc)",
-                    "regexp:(flows|miaoko).(pages).(dev)"
-                ]
-            },
-            {
-                "type": "field",
-                "outboundTag": "block",
-                "ip": [
-                    "127.0.0.1/32",
-                    "10.0.0.0/8",
-                    "fc00::/7",
-                    "fe80::/10",
-                    "172.16.0.0/12"
-                ]
-            },
-            {
-                "type": "field",
-                "outboundTag": "block",
-                "protocol": [
-                    "bittorrent"
-                ]
-            }
-        ]
-    }
+}
 EOF
 
     ipv6_support=$(check_ipv6_support)
@@ -818,6 +871,7 @@ EOF
     if [ "$ipv6_support" -eq 1 ]; then
         dnsstrategy="prefer_ipv4"
     fi
+
     # 创建 sing_origin.json 文件
     cat <<EOF > /etc/V2bX/sing_origin.json
 {
@@ -852,28 +906,18 @@ EOF
       },
       {
         "domain_regex": [
-            "(api|ps|sv|offnavi|newvector|ulog.imap|newloc)(.map|).(baidu|n.shifen).com",
-            "(.+.|^)(360|so).(cn|com)",
+            "(api|ps|sv|offnavi|newvector|ulog\\.imap|newloc)(\\.map|)\\.(baidu|n\\.shifen)\\.com",
+            "(.+\\.|^)(360|so)\\.(cn|com)",
             "(Subject|HELO|SMTP)",
-            "(torrent|.torrent|peer_id=|info_hash|get_peers|find_node|BitTorrent|announce_peer|announce.php?passkey=)",
-            "(^.@)(guerrillamail|guerrillamailblock|sharklasers|grr|pokemail|spam4|bccto|chacuo|027168).(info|biz|com|de|net|org|me|la)",
-            "(.?)(xunlei|sandai|Thunder|XLLiveUD)(.)",
-            "(..||)(dafahao|mingjinglive|botanwang|minghui|dongtaiwang|falunaz|epochtimes|ntdtv|falundafa|falungong|wujieliulan|zhengjian).(org|com|net)",
-            "(ed2k|.torrent|peer_id=|announce|info_hash|get_peers|find_node|BitTorrent|announce_peer|announce.php?passkey=|magnet:|xunlei|sandai|Thunder|XLLiveUD|bt_key)",
-            "(.+.|^)(360).(cn|com|net)",
-            "(.*.||)(guanjia.qq.com|qqpcmgr|QQPCMGR)",
-            "(.*.||)(rising|kingsoft|duba|xindubawukong|jinshanduba).(com|net|org)",
-            "(.*.||)(netvigator|torproject).(com|cn|net|org)",
-            "(..||)(visa|mycard|gash|beanfun|bank).",
-            "(.*.||)(gov|12377|12315|talk.news.pts.org|creaders|zhuichaguoji|efcc.org|cyberpolice|aboluowang|tuidang|epochtimes|zhengjian|110.qq|mingjingnews|inmediahk|xinsheng|breakgfw|chengmingmag|jinpianwang|qi-gong|mhradio|edoors|renminbao|soundofhope|xizang-zhiye|bannedbook|ntdtv|12321|secretchina|dajiyuan|boxun|chinadigitaltimes|dwnews|huaglad|oneplusnews|epochweekly|cn.rfi).(cn|com|org|net|club|net|fr|tw|hk|eu|info|me)",
-            "(.*.||)(miaozhen|cnzz|talkingdata|umeng).(cn|com)",
-            "(.*.||)(mycard).(com|tw)",
-            "(.*.||)(gash).(com|tw)",
-            "(.bank.)",
-            "(.*.||)(pincong).(rocks)",
-            "(.*.||)(taobao).(com)",
-            "(.*.||)(laomoe|jiyou|ssss|lolicp|vv1234|0z|4321q|868123|ksweb|mm126).(com|cloud|fun|cn|gs|xyz|cc)",
-            "(flows|miaoko).(pages).(dev)"
+            "(torrent|\\.torrent|peer_id=|info_hash|get_peers|find_node|BitTorrent|announce_peer|announce\\.php\\?passkey=)",
+            "(ed2k|\\.torrent|peer_id=|announce|info_hash|get_peers|find_node|BitTorrent|announce_peer|announce\\.php\\?passkey=|magnet:|xunlei|sandai|Thunder|XLLiveUD|bt_key)",
+            "(.*\\.||)(guanjia\\.qq\\.com|qqpcmgr|QQPCMGR)",
+            "(.*\\.||)(rising|kingsoft|duba|xindubawukong|jinshanduba)\\.(com|net|org)",
+            "(.*\\.||)(netvigator|torproject)\\.(com|cn|net|org)",
+            "(.*\\.||)(miaozhen|cnzz|talkingdata|umeng)\\.(cn|com)",
+            "(.*\\.||)(taobao)\\.(com)",
+            "(.*\\.||)(laomoe|jiyou|ssss|lolicp|vv1234|0z|4321q|868123|ksweb|mm126)\\.(com|cloud|fun|cn|gs|xyz|cc)",
+            "(flows|miaoko)\\.(pages)\\.(dev)"
         ],
         "outbound": "block"
       },
@@ -893,19 +937,19 @@ EOF
 }
 EOF
 
-    # 创建 hy2config.yaml 文件           
-    cat <<EOF > /etc/V2bX/hy2config.yaml
+    # 创建 hy2config.yaml 文件
+    cat <<'EOF' > /etc/V2bX/hy2config.yaml
 quic:
-  initStreamReceiveWindow: 8388608
-  maxStreamReceiveWindow: 8388608
-  initConnReceiveWindow: 20971520
-  maxConnReceiveWindow: 20971520
-  maxIdleTimeout: 30s
-  maxIncomingStreams: 1024
+  initStreamReceiveWindow: 16777216
+  maxStreamReceiveWindow: 16777216
+  initConnReceiveWindow: 33554432
+  maxConnReceiveWindow: 33554432
+  maxIdleTimeout: 90s
+  maxIncomingStreams: 4096
   disablePathMTUDiscovery: false
 ignoreClientBandwidth: false
 disableUDP: false
-udpIdleTimeout: 60s
+udpIdleTimeout: 120s
 resolver:
   type: system
 acl:
@@ -986,7 +1030,6 @@ show_menu() {
   ${green}16.${plain} 放行 VPS 的所有网络端口
   ${green}17.${plain} 退出脚本
  "
- #后续更新可加入上方字符串中
     show_status
     echo && read -rp "请输入选择 [0-17]: " num
 

@@ -31,6 +31,7 @@ type ApiConfig struct {
 	NodeType     string `json:"NodeType"`
 	Timeout      int    `json:"Timeout"`
 	RuleListPath string `json:"RuleListPath"`
+	ApiVersion   int    `json:"ApiVersion"` // 1 = V1 UniProxy (default), 2 = V2 flat API (for Shannon-x/v2board ServerV2node)
 }
 
 func (n *NodeConfig) UnmarshalJSON(data []byte) (err error) {

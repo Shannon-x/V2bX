@@ -66,13 +66,16 @@ func (x *Xray) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 		c.Counters.Range(func(key, value interface{}) bool {
 			email := key.(string)
 			traffic := value.(*counter.TrafficStorage)
-			up := traffic.UpCounter.Load()
-			down := traffic.DownCounter.Load()
+			var up, down int64
+			if reset {
+				// Atomic swap: read and reset in one operation, prevents traffic loss
+				up = traffic.UpCounter.Swap(0)
+				down = traffic.DownCounter.Swap(0)
+			} else {
+				up = traffic.UpCounter.Load()
+				down = traffic.DownCounter.Load()
+			}
 			if up+down > x.nodeReportMinTrafficBytes[tag] {
-				if reset {
-					traffic.UpCounter.Store(0)
-					traffic.DownCounter.Store(0)
-				}
 				if x.users.uidMap[email] == 0 {
 					c.Delete(email)
 					return true
@@ -82,6 +85,10 @@ func (x *Xray) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 					Upload:   up,
 					Download: down,
 				})
+			} else if reset && (up > 0 || down > 0) {
+				// Below threshold, add back to avoid losing small amounts
+				traffic.UpCounter.Add(up)
+				traffic.DownCounter.Add(down)
 			}
 			return true
 		})

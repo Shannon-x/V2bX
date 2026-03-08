@@ -23,6 +23,15 @@ func (w *Writer) Close() error {
 }
 
 func (w *Writer) WriteMultiBuffer(mb buf.MultiBuffer) error {
-	w.limiter.Wait(int64(mb.Len()))
+	n := int64(mb.Len())
+	// Burst optimization: allow small packets through immediately
+	// to reduce latency for interactive traffic
+	if n > 0 {
+		if avail := w.limiter.Available(); avail >= n {
+			w.limiter.TakeAvailable(n)
+		} else {
+			w.limiter.Wait(n)
+		}
+	}
 	return w.writer.WriteMultiBuffer(mb)
 }

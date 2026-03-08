@@ -23,6 +23,7 @@ type Client struct {
 	Token            string
 	NodeType         string
 	NodeId           int
+	ApiVersion       int // 1 = V1 UniProxy, 2 = V2 flat API
 	nodeEtag         string
 	userEtag         string
 	responseBodyHash string
@@ -77,14 +78,19 @@ func New(c *conf.ApiConfig) (*Client, error) {
 		"node_id":   strconv.Itoa(c.NodeID),
 		"token":     c.Key,
 	})
+	apiVersion := c.ApiVersion
+	if apiVersion == 0 {
+		apiVersion = 1
+	}
 	return &Client{
-		client:    client,
-		Token:     c.Key,
-		APIHost:   c.APIHost,
-		APISendIP: c.APISendIP,
-		NodeType:  c.NodeType,
-		NodeId:    c.NodeID,
-		UserList:  &UserListBody{},
-		AliveMap:  &AliveMap{},
+		client:     client,
+		Token:      c.Key,
+		APIHost:    c.APIHost,
+		APISendIP:  c.APISendIP,
+		NodeType:   c.NodeType,
+		NodeId:     c.NodeID,
+		ApiVersion: apiVersion,
+		UserList:   &UserListBody{},
+		AliveMap:   &AliveMap{},
 	}, nil
 }

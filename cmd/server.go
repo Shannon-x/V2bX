@@ -61,6 +61,12 @@ func serverHandle(_ *cobra.Command, _ []string) {
 		}
 		log.SetOutput(f)
 	}
+	// Validate configuration
+	if warnings := c.Validate(); len(warnings) > 0 {
+		for _, w := range warnings {
+			log.WithField("warning", w).Warn("Config validation")
+		}
+	}
 	limiter.Init()
 	log.Info("Start V2bX...")
 	vc, err := vCore.NewCore(c.CoresConfig)

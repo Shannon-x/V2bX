@@ -28,9 +28,14 @@ func (c *Controller) reportUserTrafficTask() (err error) {
 		// Only report user has traffic > 100kb to allow ping test
 		var result []panel.OnlineUser
 		var nocountUID = make(map[int]struct{})
+		// Use panel-provided threshold if available, otherwise use local config
+		minTraffic := c.Options.DeviceOnlineMinTraffic
+		if c.info != nil && c.info.DeviceOnlineMinTraffic > 0 {
+			minTraffic = int64(c.info.DeviceOnlineMinTraffic)
+		}
 		for _, traffic := range userTraffic {
 			total := traffic.Upload + traffic.Download
-			if total < int64(c.Options.DeviceOnlineMinTraffic*1000) {
+			if total < minTraffic*1000 {
 				nocountUID[traffic.UID] = struct{}{}
 			}
 		}

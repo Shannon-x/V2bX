@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/InazumaV/V2bX/api/panel"
@@ -13,11 +14,10 @@ import (
 	"github.com/juju/ratelimit"
 )
 
-var limitLock sync.RWMutex
-var limiter map[string]*Limiter
+var limiters sync.Map // map[string]*Limiter
 
 func Init() {
-	limiter = map[string]*Limiter{}
+	limiters = sync.Map{}
 }
 
 type Limiter struct {
@@ -26,10 +26,37 @@ type Limiter struct {
 	SpeedLimit    int
 	UserOnlineIP  *sync.Map      // Key: TagUUID, value: {Key: Ip, value: Uid}
 	OldUserOnline *sync.Map      // Key: Ip, value: Uid
-	UUIDtoUID     map[string]int // Key: UUID, value: Uid
+	UUIDtoUID     sync.Map       // Key: UUID, value: Uid (lock-free)
 	UserLimitInfo *sync.Map      // Key: TagUUID value: UserLimitInfo
-	SpeedLimiter  *sync.Map      // key: TagUUID, value: *ratelimit.Bucket
-	AliveList     map[int]int    // Key: Uid, value: alive_ip
+	SpeedLimiter  *sync.Map      // key: TagUUID, value: *DynamicBucket
+	AliveList     atomic.Pointer[map[int]int]
+}
+
+// DynamicBucket supports atomic hot-swap of rate limit bucket
+type DynamicBucket struct {
+	bucket atomic.Pointer[ratelimit.Bucket]
+}
+
+func NewDynamicBucket(limit int64) *DynamicBucket {
+	db := &DynamicBucket{}
+	b := ratelimit.NewBucketWithQuantum(time.Second, limit, limit)
+	db.bucket.Store(b)
+	return db
+}
+
+func (db *DynamicBucket) Wait(n int64) {
+	if b := db.bucket.Load(); b != nil {
+		b.Wait(n)
+	}
+}
+
+func (db *DynamicBucket) Update(limit int64) {
+	b := ratelimit.NewBucketWithQuantum(time.Second, limit, limit)
+	db.bucket.Store(b)
+}
+
+func (db *DynamicBucket) Bucket() *ratelimit.Bucket {
+	return db.bucket.Load()
 }
 
 type UserLimitInfo struct {
@@ -47,46 +74,36 @@ func AddLimiter(tag string, l *conf.LimitConfig, users []panel.UserInfo, aliveLi
 		UserOnlineIP:  new(sync.Map),
 		UserLimitInfo: new(sync.Map),
 		SpeedLimiter:  new(sync.Map),
-		AliveList:     aliveList,
 		OldUserOnline: new(sync.Map),
 	}
-	uuidmap := make(map[string]int)
+	info.AliveList.Store(&aliveList)
 	for i := range users {
-		uuidmap[users[i].Uuid] = users[i].Id
-		userLimit := &UserLimitInfo{}
-		userLimit.UID = users[i].Id
+		info.UUIDtoUID.Store(users[i].Uuid, users[i].Id)
+		userLimit := &UserLimitInfo{
+			UID: users[i].Id,
+		}
 		if users[i].SpeedLimit != 0 {
 			userLimit.SpeedLimit = users[i].SpeedLimit
 		}
 		if users[i].DeviceLimit != 0 {
 			userLimit.DeviceLimit = users[i].DeviceLimit
 		}
-		userLimit.OverLimit = false
 		info.UserLimitInfo.Store(format.UserTag(tag, users[i].Uuid), userLimit)
 	}
-	info.UUIDtoUID = uuidmap
-	limitLock.Lock()
-	limiter[tag] = info
-	limitLock.Unlock()
+	limiters.Store(tag, info)
 	return info
 }
 
 func GetLimiter(tag string) (info *Limiter, err error) {
-	limitLock.RLock()
-	info, ok := limiter[tag]
-	limitLock.RUnlock()
-	if !ok {
-		return nil, errors.New("not found")
+	if v, ok := limiters.Load(tag); ok {
+		return v.(*Limiter), nil
 	}
-	return info, nil
+	return nil, errors.New("not found")
 }
 
 func DeleteLimiter(tag string) {
-	limitLock.Lock()
-	defer limitLock.Unlock()
-	
-	if l, ok := limiter[tag]; ok {
-		// 清理所有 sync.Map 条目以确保内存释放
+	if v, ok := limiters.LoadAndDelete(tag); ok {
+		l := v.(*Limiter)
 		l.SpeedLimiter.Range(func(key, _ interface{}) bool {
 			l.SpeedLimiter.Delete(key)
 			return true
@@ -104,7 +121,6 @@ func DeleteLimiter(tag string) {
 			return true
 		})
 	}
-	delete(limiter, tag)
 }
 
 func (l *Limiter) UpdateUser(tag string, added []panel.UserInfo, deleted []panel.UserInfo) {
@@ -112,8 +128,10 @@ func (l *Limiter) UpdateUser(tag string, added []panel.UserInfo, deleted []panel
 		l.UserLimitInfo.Delete(format.UserTag(tag, deleted[i].Uuid))
 		l.UserOnlineIP.Delete(format.UserTag(tag, deleted[i].Uuid))
 		l.SpeedLimiter.Delete(format.UserTag(tag, deleted[i].Uuid))
-		delete(l.UUIDtoUID, deleted[i].Uuid)
-		delete(l.AliveList, deleted[i].Id)
+		l.UUIDtoUID.Delete(deleted[i].Uuid)
+		if al := l.AliveList.Load(); al != nil {
+			delete(*al, deleted[i].Id)
+		}
 	}
 	for i := range added {
 		userLimit := &UserLimitInfo{
@@ -126,9 +144,8 @@ func (l *Limiter) UpdateUser(tag string, added []panel.UserInfo, deleted []panel
 		if added[i].DeviceLimit != 0 {
 			userLimit.DeviceLimit = added[i].DeviceLimit
 		}
-		userLimit.OverLimit = false
 		l.UserLimitInfo.Store(format.UserTag(tag, added[i].Uuid), userLimit)
-		l.UUIDtoUID[added[i].Uuid] = added[i].Id
+		l.UUIDtoUID.Store(added[i].Uuid, added[i].Id)
 	}
 }
 
@@ -137,17 +154,31 @@ func (l *Limiter) UpdateDynamicSpeedLimit(tag, uuid string, limit int, expire ti
 		info := v.(*UserLimitInfo)
 		info.DynamicSpeedLimit = limit
 		info.ExpireTime = expire.Unix()
+
+		// Hot-swap the rate limit bucket atomically
+		taguuid := format.UserTag(tag, uuid)
+		newLimit := int64(determineSpeedLimit(l.SpeedLimit, limit)) * 1000000 / 8
+		if newLimit > 0 {
+			if v, ok := l.SpeedLimiter.Load(taguuid); ok {
+				v.(*DynamicBucket).Update(newLimit)
+			}
+		}
 	} else {
 		return errors.New("not found")
 	}
 	return nil
 }
 
+func (l *Limiter) getAliveIp(uid int) int {
+	if al := l.AliveList.Load(); al != nil {
+		return (*al)[uid]
+	}
+	return 0
+}
+
 func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool) (Bucket *ratelimit.Bucket, Reject bool) {
-	// check if ipv4 mapped ipv6
 	ip = strings.TrimPrefix(ip, "::ffff:")
 
-	// check and gen speed limit Bucket
 	nodeLimit := l.SpeedLimit
 	userLimit := 0
 	deviceLimit := 0
@@ -171,14 +202,11 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 		return nil, true
 	}
 	if noSSUDP {
-		// Store online user for device limit
 		newipMap := new(sync.Map)
 		newipMap.Store(ip, uid)
-		aliveIp := l.AliveList[uid]
-		// If any device is online
+		aliveIp := l.getAliveIp(uid)
 		if v, loaded := l.UserOnlineIP.LoadOrStore(taguuid, newipMap); loaded {
 			oldipMap := v.(*sync.Map)
-			// If this is a new ip
 			if _, loaded := oldipMap.LoadOrStore(ip, uid); !loaded {
 				if v, loaded := l.OldUserOnline.Load(ip); loaded {
 					if v.(int) == uid {
@@ -205,18 +233,19 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 		}
 	}
 
-	limit := int64(determineSpeedLimit(nodeLimit, userLimit)) * 1000000 / 8 // If you need the Speed limit
+	limit := int64(determineSpeedLimit(nodeLimit, userLimit)) * 1000000 / 8
 	if limit > 0 {
-		Bucket = ratelimit.NewBucketWithQuantum(time.Second, limit, limit) // Byte/s
-		if v, ok := l.SpeedLimiter.LoadOrStore(taguuid, Bucket); ok {
-			return v.(*ratelimit.Bucket), false
-		} else {
-			l.SpeedLimiter.Store(taguuid, Bucket)
-			return Bucket, false
+		// Check existing bucket first to avoid unnecessary allocation
+		if v, ok := l.SpeedLimiter.Load(taguuid); ok {
+			return v.(*DynamicBucket).Bucket(), false
 		}
-	} else {
-		return nil, false
+		db := NewDynamicBucket(limit)
+		if v, loaded := l.SpeedLimiter.LoadOrStore(taguuid, db); loaded {
+			return v.(*DynamicBucket).Bucket(), false
+		}
+		return db.Bucket(), false
 	}
+	return nil, false
 }
 
 func (l *Limiter) GetOnlineDevice() (*[]panel.OnlineUser, error) {
@@ -232,7 +261,7 @@ func (l *Limiter) GetOnlineDevice() (*[]panel.OnlineUser, error) {
 			onlineUser = append(onlineUser, panel.OnlineUser{UID: uid, IP: ip})
 			return true
 		})
-		l.UserOnlineIP.Delete(taguuid) // Reset online device
+		l.UserOnlineIP.Delete(taguuid)
 		return true
 	})
 

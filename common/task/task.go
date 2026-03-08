@@ -24,6 +24,14 @@ func (t *Task) Start(first bool) error {
 	t.access.Unlock()
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.access.Lock()
+				t.running = false
+				t.access.Unlock()
+			}
+		}()
+
 		if first {
 			if err := t.Execute(); err != nil {
 				t.access.Lock()
@@ -34,9 +42,12 @@ func (t *Task) Start(first bool) error {
 			}
 		}
 
+		timer := time.NewTimer(t.Interval)
+		defer timer.Stop()
+
 		for {
 			select {
-			case <-time.After(t.Interval):
+			case <-timer.C:
 			case <-t.stop:
 				return
 			}
@@ -48,6 +59,8 @@ func (t *Task) Start(first bool) error {
 				t.access.Unlock()
 				return
 			}
+
+			timer.Reset(t.Interval)
 		}
 	}()
 

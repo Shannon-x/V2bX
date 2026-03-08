@@ -33,7 +33,23 @@ import (
 	"github.com/xtls/xray-core/transport/pipe"
 )
 
-var errSniffingTimeout = errors.New("timeout on sniffing")
+var (
+	errSniffingTimeout = errors.New("timeout on sniffing")
+	// Cache compiled regexps for shouldOverride to avoid recompilation on every connection
+	regexpCache sync.Map // map[string]*regexp.Regexp
+)
+
+func getCompiledRegexp(pattern string) (*regexp.Regexp, error) {
+	if v, ok := regexpCache.Load(pattern); ok {
+		return v.(*regexp.Regexp), nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	regexpCache.Store(pattern, re)
+	return re, nil
+}
 
 type cachedReader struct {
 	sync.Mutex
@@ -203,10 +219,7 @@ func (d *DefaultDispatcher) getLink(ctx context.Context, network net.Network) (*
 		} else {
 			lm = lmloaded.(*LinkManager)
 		}
-		managedWriter := &ManagedWriter{
-			writer:  uplinkWriter,
-			manager: lm,
-		}
+		managedWriter := newManagedWriter(uplinkWriter, lm)
 		lm.AddLink(managedWriter, outboundLink.Reader)
 		inboundLink.Writer = managedWriter
 		if w != nil {
@@ -246,7 +259,7 @@ func (d *DefaultDispatcher) shouldOverride(ctx context.Context, result SniffResu
 	for _, d := range request.ExcludeForDomain {
 		if strings.HasPrefix(d, "regexp:") {
 			pattern := d[7:]
-			re, err := regexp.Compile(pattern)
+			re, err := getCompiledRegexp(pattern)
 			if err != nil {
 				errors.LogInfo(ctx, "Unable to compile regex")
 				continue
@@ -310,6 +323,13 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 		go d.routedDispatch(ctx, outbound, destination, l, "")
 	} else {
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					errors.LogError(ctx, "panic in dispatcher sniffing: ", fmt.Sprint(r))
+					common.Close(outbound.Writer)
+					common.Interrupt(outbound.Reader)
+				}
+			}()
 			cReader := &cachedReader{
 				reader: outbound.Reader.(*pipe.Reader),
 			}
@@ -397,10 +417,7 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 		} else {
 			lm = lmloaded.(*LinkManager)
 		}
-		managedWriter := &ManagedWriter{
-			writer:  outbound.Writer,
-			manager: lm,
-		}
+		managedWriter := newManagedWriter(outbound.Writer, lm)
 		outbound.Writer = managedWriter
 		if w != nil {
 			sessionInbound.CanSpliceCopy = 3

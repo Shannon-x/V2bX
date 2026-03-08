@@ -27,7 +27,13 @@ func (h *HookServer) ModeList() []string {
 	return nil
 }
 
-func (h *HookServer) RoutedConnection(_ context.Context, conn net.Conn, m adapter.InboundContext, _ adapter.Rule, _ adapter.Outbound) net.Conn {
+func (h *HookServer) RoutedConnection(_ context.Context, conn net.Conn, m adapter.InboundContext, _ adapter.Rule, _ adapter.Outbound) (retConn net.Conn) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("[", m.Inbound, "] panic in RoutedConnection: ", r)
+			retConn = conn
+		}
+	}()
 	l, err := limiter.GetLimiter(m.Inbound)
 	if err != nil {
 		log.Warn("get limiter for ", m.Inbound, " error: ", err)
@@ -75,7 +81,13 @@ func (h *HookServer) RoutedConnection(_ context.Context, conn net.Conn, m adapte
 	return conn
 }
 
-func (h *HookServer) RoutedPacketConnection(_ context.Context, conn N.PacketConn, m adapter.InboundContext, _ adapter.Rule, _ adapter.Outbound) N.PacketConn {
+func (h *HookServer) RoutedPacketConnection(_ context.Context, conn N.PacketConn, m adapter.InboundContext, _ adapter.Rule, _ adapter.Outbound) (retConn N.PacketConn) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("[", m.Inbound, "] panic in RoutedPacketConnection: ", r)
+			retConn = conn
+		}
+	}()
 	l, err := limiter.GetLimiter(m.Inbound)
 	if err != nil {
 		log.Warn("get limiter for ", m.Inbound, " error: ", err)

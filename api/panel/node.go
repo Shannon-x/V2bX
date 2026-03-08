@@ -28,6 +28,10 @@ type NodeInfo struct {
 	RawDNS       RawDNS
 	Rules        Rules
 
+	// Panel-provided thresholds (from base_config, 0 means use local config)
+	DeviceOnlineMinTraffic int
+	NodeReportMinTraffic   int
+
 	// origin
 	VAllss      *VAllssNode
 	Shadowsocks *ShadowsocksNode
@@ -54,8 +58,10 @@ type Route struct {
 	ActionValue string      `json:"action_value"`
 }
 type BaseConfig struct {
-	PushInterval any `json:"push_interval"`
-	PullInterval any `json:"pull_interval"`
+	PushInterval           any `json:"push_interval"`
+	PullInterval           any `json:"pull_interval"`
+	DeviceOnlineMinTraffic int `json:"device_online_min_traffic"`
+	NodeReportMinTraffic   int `json:"node_report_min_traffic"`
 }
 
 // VAllssNode is vmess and vless node info
@@ -149,16 +155,60 @@ type Rules struct {
 	Protocol []string
 }
 
+// V2UnifiedNode is the flat config format from V2 API (/api/v2/server/config).
+// All protocol fields are in a single struct, with `protocol` distinguishing the type.
+type V2UnifiedNode struct {
+	CommonNode
+	Protocol                string          `json:"protocol"`
+	Tls                     int             `json:"tls"`
+	TlsSettings             TlsSettings     `json:"tls_settings"`
+	Network                 string          `json:"network"`
+	NetworkSettings         json.RawMessage `json:"network_settings"`
+	Encryption              string          `json:"encryption"`
+	EncryptionSettings      EncSettings     `json:"encryption_settings"`
+	Flow                    string          `json:"flow"`
+	Cipher                  string          `json:"cipher"`
+	ServerKey               string          `json:"server_key"`
+	CongestionControl       string          `json:"congestion_control"`
+	ZeroRTTHandshake        bool            `json:"zero_rtt_handshake"`
+	PaddingScheme           []string        `json:"padding_scheme,omitempty"`
+	UpMbps                  int             `json:"up_mbps"`
+	DownMbps                int             `json:"down_mbps"`
+	Obfs                    string          `json:"obfs"`
+	ObfsPassword            string          `json:"obfs-password"`
+	Ignore_Client_Bandwidth bool            `json:"ignore_client_bandwidth"`
+}
+
 func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
-	const path = "/api/v1/server/UniProxy/config"
+	var path string
+	if c.ApiVersion == 2 {
+		path = "/api/v2/server/config"
+	} else {
+		path = "/api/v1/server/UniProxy/config"
+	}
 	r, err := c.client.
 		R().
 		SetHeader("If-None-Match", c.nodeEtag).
 		ForceContentType("application/json").
 		Get(path)
 
+	if err != nil {
+		return nil, fmt.Errorf("request %s failed: %s", c.assembleURL(path), err)
+	}
+	if r == nil {
+		return nil, fmt.Errorf("received nil response")
+	}
+	defer func() {
+		if r.RawBody() != nil {
+			r.RawBody().Close()
+		}
+	}()
+
 	if r.StatusCode() == 304 {
 		return nil, nil
+	}
+	if err = c.checkResponse(r, path, nil); err != nil {
+		return nil, err
 	}
 	hash := sha256.Sum256(r.Body())
 	newBodyHash := hex.EncodeToString(hash[:])
@@ -167,19 +217,6 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 	}
 	c.responseBodyHash = newBodyHash
 	c.nodeEtag = r.Header().Get("ETag")
-	if err = c.checkResponse(r, path, err); err != nil {
-		return nil, err
-	}
-
-	if r != nil {
-		defer func() {
-			if r.RawBody() != nil {
-				r.RawBody().Close()
-			}
-		}()
-	} else {
-		return nil, fmt.Errorf("received nil response")
-	}
 	node = &NodeInfo{
 		Id:   c.NodeId,
 		Type: c.NodeType,
@@ -190,78 +227,159 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 	}
 	// parse protocol params
 	var cm *CommonNode
-	switch c.NodeType {
-	case "vmess", "vless":
-		rsp := &VAllssNode{}
+	if c.ApiVersion == 2 {
+		// V2 API: flat unified config with `protocol` field
+		rsp := &V2UnifiedNode{}
 		err = json.Unmarshal(r.Body(), rsp)
 		if err != nil {
-			return nil, fmt.Errorf("decode v2ray params error: %s", err)
+			return nil, fmt.Errorf("decode v2 unified config error: %s", err)
 		}
-		if len(rsp.NetworkSettingsBack) > 0 {
-			rsp.NetworkSettings = rsp.NetworkSettingsBack
-			rsp.NetworkSettingsBack = nil
+		// Override NodeType from panel's protocol field
+		proto := strings.ToLower(rsp.Protocol)
+		switch proto {
+		case "v2ray":
+			proto = "vmess"
+		case "hysteria2":
+			proto = "hysteria2" // keep as-is, panel may use either
 		}
-		if rsp.TlsSettingsBack != nil {
-			rsp.TlsSettings = *rsp.TlsSettingsBack
-			rsp.TlsSettingsBack = nil
-		}
+		node.Type = proto
 		cm = &rsp.CommonNode
-		node.VAllss = rsp
-		node.Security = node.VAllss.Tls
-	case "shadowsocks":
-		rsp := &ShadowsocksNode{}
-		err = json.Unmarshal(r.Body(), rsp)
-		if err != nil {
-			return nil, fmt.Errorf("decode shadowsocks params error: %s", err)
+		// Map unified fields to protocol-specific structs
+		switch proto {
+		case "vmess", "vless":
+			node.VAllss = &VAllssNode{
+				CommonNode:         rsp.CommonNode,
+				Tls:                rsp.Tls,
+				TlsSettings:        rsp.TlsSettings,
+				Network:            rsp.Network,
+				NetworkSettings:    rsp.NetworkSettings,
+				Encryption:         rsp.Encryption,
+				EncryptionSettings: rsp.EncryptionSettings,
+				Flow:               rsp.Flow,
+			}
+			node.Security = rsp.Tls
+		case "shadowsocks":
+			node.Shadowsocks = &ShadowsocksNode{
+				CommonNode: rsp.CommonNode,
+				Cipher:     rsp.Cipher,
+				ServerKey:  rsp.ServerKey,
+			}
+			node.Security = None
+		case "trojan":
+			node.Trojan = &TrojanNode{
+				CommonNode: rsp.CommonNode,
+				Network:    rsp.Network,
+			}
+			node.Security = Tls
+		case "tuic":
+			node.Tuic = &TuicNode{
+				CommonNode:        rsp.CommonNode,
+				CongestionControl: rsp.CongestionControl,
+				ZeroRTTHandshake:  rsp.ZeroRTTHandshake,
+			}
+			node.Security = Tls
+		case "anytls":
+			node.AnyTls = &AnyTlsNode{
+				CommonNode:    rsp.CommonNode,
+				PaddingScheme: rsp.PaddingScheme,
+			}
+			node.Security = Tls
+		case "hysteria":
+			node.Hysteria = &HysteriaNode{
+				CommonNode: rsp.CommonNode,
+				UpMbps:     rsp.UpMbps,
+				DownMbps:   rsp.DownMbps,
+				Obfs:       rsp.Obfs,
+			}
+			node.Security = Tls
+		case "hysteria2":
+			node.Hysteria2 = &Hysteria2Node{
+				CommonNode:              rsp.CommonNode,
+				Ignore_Client_Bandwidth: rsp.Ignore_Client_Bandwidth,
+				UpMbps:                  rsp.UpMbps,
+				DownMbps:                rsp.DownMbps,
+				ObfsType:                rsp.Obfs,
+				ObfsPassword:            rsp.ObfsPassword,
+			}
+			node.Security = Tls
+		default:
+			return nil, fmt.Errorf("unsupported protocol in V2 config: %s", proto)
 		}
-		cm = &rsp.CommonNode
-		node.Shadowsocks = rsp
-		node.Security = None
-	case "trojan":
-		rsp := &TrojanNode{}
-		err = json.Unmarshal(r.Body(), rsp)
-		if err != nil {
-			return nil, fmt.Errorf("decode trojan params error: %s", err)
+	} else {
+		// V1 API: protocol-specific config structs
+		switch c.NodeType {
+		case "vmess", "vless":
+			rsp := &VAllssNode{}
+			err = json.Unmarshal(r.Body(), rsp)
+			if err != nil {
+				return nil, fmt.Errorf("decode v2ray params error: %s", err)
+			}
+			if len(rsp.NetworkSettingsBack) > 0 {
+				rsp.NetworkSettings = rsp.NetworkSettingsBack
+				rsp.NetworkSettingsBack = nil
+			}
+			if rsp.TlsSettingsBack != nil {
+				rsp.TlsSettings = *rsp.TlsSettingsBack
+				rsp.TlsSettingsBack = nil
+			}
+			cm = &rsp.CommonNode
+			node.VAllss = rsp
+			node.Security = node.VAllss.Tls
+		case "shadowsocks":
+			rsp := &ShadowsocksNode{}
+			err = json.Unmarshal(r.Body(), rsp)
+			if err != nil {
+				return nil, fmt.Errorf("decode shadowsocks params error: %s", err)
+			}
+			cm = &rsp.CommonNode
+			node.Shadowsocks = rsp
+			node.Security = None
+		case "trojan":
+			rsp := &TrojanNode{}
+			err = json.Unmarshal(r.Body(), rsp)
+			if err != nil {
+				return nil, fmt.Errorf("decode trojan params error: %s", err)
+			}
+			cm = &rsp.CommonNode
+			node.Trojan = rsp
+			node.Security = Tls
+		case "tuic":
+			rsp := &TuicNode{}
+			err = json.Unmarshal(r.Body(), rsp)
+			if err != nil {
+				return nil, fmt.Errorf("decode tuic params error: %s", err)
+			}
+			cm = &rsp.CommonNode
+			node.Tuic = rsp
+			node.Security = Tls
+		case "anytls":
+			rsp := &AnyTlsNode{}
+			err = json.Unmarshal(r.Body(), rsp)
+			if err != nil {
+				return nil, fmt.Errorf("decode anytls params error: %s", err)
+			}
+			cm = &rsp.CommonNode
+			node.AnyTls = rsp
+			node.Security = Tls
+		case "hysteria":
+			rsp := &HysteriaNode{}
+			err = json.Unmarshal(r.Body(), rsp)
+			if err != nil {
+				return nil, fmt.Errorf("decode hysteria params error: %s", err)
+			}
+			cm = &rsp.CommonNode
+			node.Hysteria = rsp
+			node.Security = Tls
+		case "hysteria2":
+			rsp := &Hysteria2Node{}
+			err = json.Unmarshal(r.Body(), rsp)
+			if err != nil {
+				return nil, fmt.Errorf("decode hysteria2 params error: %s", err)
+			}
+			cm = &rsp.CommonNode
+			node.Hysteria2 = rsp
+			node.Security = Tls
 		}
-		cm = &rsp.CommonNode
-		node.Trojan = rsp
-		node.Security = Tls
-	case "tuic":
-		rsp := &TuicNode{}
-		err = json.Unmarshal(r.Body(), rsp)
-		if err != nil {
-			return nil, fmt.Errorf("decode tuic params error: %s", err)
-		}
-		cm = &rsp.CommonNode
-		node.Tuic = rsp
-		node.Security = Tls
-	case "anytls":
-		rsp := &AnyTlsNode{}
-		err = json.Unmarshal(r.Body(), rsp)
-		if err != nil {
-			return nil, fmt.Errorf("decode anytls params error: %s", err)
-		}
-		cm = &rsp.CommonNode
-		node.AnyTls = rsp
-		node.Security = Tls
-	case "hysteria":
-		rsp := &HysteriaNode{}
-		err = json.Unmarshal(r.Body(), rsp)
-		if err != nil {
-			return nil, fmt.Errorf("decode hysteria params error: %s", err)
-		}
-		cm = &rsp.CommonNode
-		node.Hysteria = rsp
-		node.Security = Tls
-	case "hysteria2":
-		rsp := &Hysteria2Node{}
-		err = json.Unmarshal(r.Body(), rsp)
-		if err != nil {
-			return nil, fmt.Errorf("decode hysteria2 params error: %s", err)
-		}
-		cm = &rsp.CommonNode
-		node.Hysteria2 = rsp
-		node.Security = Tls
 	}
 
 	// parse rules and dns
@@ -305,8 +423,15 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 	}
 
 	// set interval
-	node.PushInterval = intervalToTime(cm.BaseConfig.PushInterval)
-	node.PullInterval = intervalToTime(cm.BaseConfig.PullInterval)
+	if cm.BaseConfig != nil {
+		node.PushInterval = intervalToTime(cm.BaseConfig.PushInterval)
+		node.PullInterval = intervalToTime(cm.BaseConfig.PullInterval)
+		node.DeviceOnlineMinTraffic = cm.BaseConfig.DeviceOnlineMinTraffic
+		node.NodeReportMinTraffic = cm.BaseConfig.NodeReportMinTraffic
+	} else {
+		node.PushInterval = 60 * time.Second
+		node.PullInterval = 60 * time.Second
+	}
 
 	node.Common = cm
 	// clear
@@ -317,15 +442,22 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 }
 
 func intervalToTime(i interface{}) time.Duration {
-	switch reflect.TypeOf(i).Kind() {
-	case reflect.Int:
-		return time.Duration(i.(int)) * time.Second
-	case reflect.String:
-		i, _ := strconv.Atoi(i.(string))
-		return time.Duration(i) * time.Second
-	case reflect.Float64:
-		return time.Duration(i.(float64)) * time.Second
+	if i == nil {
+		return 60 * time.Second
+	}
+	switch v := i.(type) {
+	case int:
+		return time.Duration(v) * time.Second
+	case float64:
+		return time.Duration(v) * time.Second
+	case string:
+		n, _ := strconv.Atoi(v)
+		return time.Duration(n) * time.Second
 	default:
-		return time.Duration(reflect.ValueOf(i).Int()) * time.Second
+		rv := reflect.ValueOf(i)
+		if rv.CanInt() {
+			return time.Duration(rv.Int()) * time.Second
+		}
+		return 60 * time.Second
 	}
 }

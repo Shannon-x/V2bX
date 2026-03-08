@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -72,12 +73,31 @@ func saveDnsConfig(dns []byte, dnsPath string) (err error) {
 			log.WithField("err", err).Error("Failed to understand DNS config, Please check: https://xtls.github.io/config/dns.html for help")
 			return err
 		}
-		if err = os.Truncate(dnsPath, 0); err != nil {
-			log.WithField("err", err).Error("Failed to clear XRAY DNS PATH file")
+		// Atomic write: write to temp file then rename
+		dir := filepath.Dir(dnsPath)
+		tmpFile, err := os.CreateTemp(dir, ".dns-*.tmp")
+		if err != nil {
+			log.WithField("err", err).Error("Failed to create temp file for DNS config")
+			return err
 		}
-		if err = os.WriteFile(dnsPath, dns, 0644); err != nil {
-			log.WithField("err", err).Error("Failed to write DNS to XRAY DNS PATH file")
+		tmpPath := tmpFile.Name()
+		if _, err = tmpFile.Write(dns); err != nil {
+			tmpFile.Close()
+			os.Remove(tmpPath)
+			log.WithField("err", err).Error("Failed to write DNS temp file")
+			return err
+		}
+		if err = tmpFile.Sync(); err != nil {
+			tmpFile.Close()
+			os.Remove(tmpPath)
+			return err
+		}
+		tmpFile.Close()
+		if err = os.Rename(tmpPath, dnsPath); err != nil {
+			os.Remove(tmpPath)
+			log.WithField("err", err).Error("Failed to rename DNS temp file")
+			return err
 		}
 	}
-	return err
+	return nil
 }

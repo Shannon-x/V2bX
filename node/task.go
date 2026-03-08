@@ -106,7 +106,7 @@ func (c *Controller) nodeInfoMonitor() (err error) {
 		}
 		// update alive list
 		if newA != nil {
-			c.limiter.AliveList = newA
+			c.limiter.AliveList.Store(&newA)
 		}
 		// Update rule
 		err = c.limiter.UpdateRule(&newN.Rules)
@@ -169,7 +169,7 @@ func (c *Controller) nodeInfoMonitor() (err error) {
 	}
 	// update alive list
 	if newA != nil {
-		c.limiter.AliveList = newA
+		c.limiter.AliveList.Store(&newA)
 	}
 	// node no changed, check users
 	if len(newU) == 0 {
@@ -233,7 +233,9 @@ func (c *Controller) SpeedChecker() error {
 			err := c.limiter.UpdateDynamicSpeedLimit(c.tag, u,
 				c.LimitConfig.DynamicSpeedLimitConfig.SpeedLimit,
 				time.Now().Add(time.Duration(c.LimitConfig.DynamicSpeedLimitConfig.ExpireTime)*time.Minute))
-			log.WithField("err", err).Error("Update dynamic speed limit failed")
+			if err != nil {
+				log.WithField("err", err).Error("Update dynamic speed limit failed")
+			}
 			delete(c.traffic, u)
 		}
 	}

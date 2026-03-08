@@ -34,13 +34,17 @@ func NewConnCounter(conn net.Conn, s *TrafficStorage) net.Conn {
 
 func (c *ConnCounter) Read(b []byte) (n int, err error) {
 	n, err = c.ExtendedConn.Read(b)
-	c.storage.UpCounter.Store(int64(n))
+	if n > 0 {
+		c.storage.UpCounter.Add(int64(n))
+	}
 	return
 }
 
 func (c *ConnCounter) Write(b []byte) (n int, err error) {
 	n, err = c.ExtendedConn.Write(b)
-	c.storage.DownCounter.Store(int64(n))
+	if n > 0 {
+		c.storage.DownCounter.Add(int64(n))
+	}
 	return
 }
 

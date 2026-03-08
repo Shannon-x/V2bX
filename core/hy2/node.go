@@ -42,7 +42,12 @@ func (h *Hysteria2) AddNode(tag string, info *panel.NodeInfo, config *conf.Optio
 		TrafficLogger: &HookServer{
 			Tag:                   tag,
 			logger:                h.Logger,
-			ReportMinTrafficBytes: config.ReportMinTraffic * 1024,
+			ReportMinTrafficBytes: func() int64 {
+				if info.NodeReportMinTraffic > 0 {
+					return int64(info.NodeReportMinTraffic) * 1024
+				}
+				return config.ReportMinTraffic * 1024
+			}(),
 		},
 	}
 

@@ -3,8 +3,8 @@ module github.com/InazumaV/V2bX
 go 1.26
 
 require (
-	github.com/apernet/hysteria/core/v2 v2.7.1
-	github.com/apernet/hysteria/extras/v2 v2.7.1
+	github.com/apernet/hysteria/core/v2 v2.7.0
+	github.com/apernet/hysteria/extras/v2 v2.7.0
 	github.com/beevik/ntp v1.4.4-0.20240716062501-06ef196b89ec
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-acme/lego/v4 v4.25.2
@@ -331,4 +331,4 @@ replace github.com/xtls/xray-core => github.com/wyx2685/xray-core v0.0.0-2026030
 
 replace github.com/sagernet/sing => github.com/sagernet/sing v0.8.0-beta.6
 
-replace github.com/apernet/quic-go => github.com/apernet/quic-go v0.59.1-0.20260217092621-db4786c77a22
+replace github.com/apernet/quic-go => github.com/apernet/quic-go v0.57.2-0.20260111184307-eec823306178

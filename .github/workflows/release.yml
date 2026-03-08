@@ -198,4 +198,3 @@ jobs:
           release_name: ${{ steps.release_tag.outputs.RELEASE_NAME }}
           overwrite: true
           file_glob: true
-          prerelease: ${{ steps.release_tag.outputs.TAG_NAME == 'latest' }}

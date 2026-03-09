@@ -713,11 +713,11 @@ generate_config_file() {
         \"OutboundConfigPath\": \"/etc/V2bX/custom_outbound.json\",
         \"RouteConfigPath\": \"/etc/V2bX/route.json\",
         \"XrayConnectionConfig\": {
-            \"handshake\": 4,
-            \"connIdle\": 30,
+            \"handshake\": 10,
+            \"connIdle\": 300,
             \"uplinkOnly\": 2,
             \"downlinkOnly\": 4,
-            \"bufferSize\": 64
+            \"bufferSize\": 256
         }
     },"
     fi

@@ -154,11 +154,11 @@ docker compose up -d
     "OutboundConfigPath": "/etc/V2bX/custom_outbound.json",
     "RouteConfigPath": "/etc/V2bX/route.json",
     "XrayConnectionConfig": {
-        "handshake": 4,
-        "connIdle": 30,
+        "handshake": 10,
+        "connIdle": 300,
         "uplinkOnly": 2,
         "downlinkOnly": 4,
-        "bufferSize": 64
+        "bufferSize": 256
     }
 }
 ```
@@ -170,6 +170,9 @@ docker compose up -d
 | `OutboundConfigPath` | 自定义出站配置 |
 | `RouteConfigPath` | 自定义路由规则 |
 | `XrayConnectionConfig` | TCP 连接性能参数（握手超时、空闲超时、缓冲区等） |
+
+默认使用均衡通用参数（`handshake: 10`、`connIdle: 300`、`bufferSize: 256`），适合大多数 1GB 左右内存 VPS。  
+如果你是大带宽高内存机器可考虑提高到 `15/600/5/10/512`，低内存机器可降到 `4/60/1/2/32`。
 
 #### sing-box 内核
 
@@ -411,8 +414,8 @@ masquerade:
             "OutboundConfigPath": "/etc/V2bX/custom_outbound.json",
             "RouteConfigPath": "/etc/V2bX/route.json",
             "XrayConnectionConfig": {
-                "handshake": 4, "connIdle": 30,
-                "uplinkOnly": 2, "downlinkOnly": 4, "bufferSize": 64
+                "handshake": 10, "connIdle": 300,
+                "uplinkOnly": 2, "downlinkOnly": 4, "bufferSize": 256
             }
         },
         {

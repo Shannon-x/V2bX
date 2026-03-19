@@ -1,0 +1,3 @@
+[submodule "sing-box_mod"]
+	path = sing-box_mod
+	url = https://github.com/wyx2685/sing-box_mod.git

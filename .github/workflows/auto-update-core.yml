@@ -1,0 +1,116 @@
+name: Auto Update Cores
+
+on:
+  schedule:
+    - cron: '30 2 * * *' # 每天 UTC 02:30 (北京时间 10:30) 执行
+  workflow_dispatch:
+
+jobs:
+  update-cores:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v4
+        with:
+          ref: dev_new
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check and Update go.mod
+        run: |
+          # 启用 GOPROXY
+          go env -w GOPROXY=https://goproxy.cn,direct
+
+          # 使用 sed 将 replace 指令重新指向 main / dev-next 分支
+          # 这样 go mod tidy 会自动拉取并生成最新的伪版本号 (pseudo-version)
+          sed -i -E 's|replace github.com/xtls/xray-core.*|replace github.com/xtls/xray-core => github.com/wyx2685/xray-core main|' go.mod
+          sed -i -E 's|replace github.com/sagernet/sing-box.*|replace github.com/sagernet/sing-box => github.com/wyx2685/sing-box_mod dev-next|' go.mod
+
+          # 更新 hysteria core 和 extras
+          # 注意：hysteria 和 xray-core 共享 apernet/quic-go，需要版本兼容
+          # 先获取 xray-core 使用的 quic-go 版本作为基准
+          echo "Checking for hysteria updates..."
+          XRAY_QUIC_VER=$(grep 'replace github.com/apernet/quic-go' go.mod | awk '{print $NF}')
+          echo "Current quic-go (pinned by xray-core): $XRAY_QUIC_VER"
+
+          LATEST_HY_CORE=$(go list -m -versions github.com/apernet/hysteria/core/v2 2>/dev/null | tr ' ' '\n' | tail -1)
+          LATEST_HY_EXTRAS=$(go list -m -versions github.com/apernet/hysteria/extras/v2 2>/dev/null | tr ' ' '\n' | tail -1)
+
+          # 备份 go.mod 用于回退
+          cp go.mod go.mod.bak
+
+          if [ -n "$LATEST_HY_CORE" ]; then
+            echo "Latest hysteria core: $LATEST_HY_CORE"
+            go get "github.com/apernet/hysteria/core/v2@${LATEST_HY_CORE}" || true
+          fi
+          if [ -n "$LATEST_HY_EXTRAS" ]; then
+            echo "Latest hysteria extras: $LATEST_HY_EXTRAS"
+            go get "github.com/apernet/hysteria/extras/v2@${LATEST_HY_EXTRAS}" || true
+          fi
+
+          echo "Run go mod tidy to resolve latest pseudo-versions..."
+          go mod tidy
+
+          # 验证更新后的依赖是否能通过编译
+          echo "Verifying build with updated cores..."
+          export GOEXPERIMENT=jsonv2
+          if go build -v -o V2bX_test -tags "sing xray hysteria2 with_quic with_grpc with_utls with_wireguard with_acme with_gvisor" 2>&1; then
+            echo "Build succeeded with latest hysteria."
+            rm -f V2bX_test
+          else
+            # 构建失败（通常是 quic-go 版本不兼容），回退 hysteria 到兼容版本
+            echo "Build failed, likely quic-go incompatibility. Rolling back hysteria..."
+            cp go.mod.bak go.mod
+            go mod tidy
+            # 尝试只升级 extras（不依赖 quic-go congestion API）
+            if [ -n "$LATEST_HY_EXTRAS" ]; then
+              go get "github.com/apernet/hysteria/extras/v2@${LATEST_HY_EXTRAS}" || true
+              go mod tidy
+            fi
+            go build -v -o V2bX_test -tags "sing xray hysteria2 with_quic with_grpc with_utls with_wireguard with_acme with_gvisor"
+            rm -f V2bX_test
+          fi
+          rm -f go.mod.bak
+
+          # 检查文件是否被修改
+          if git diff --quiet go.mod go.sum; then
+            echo "No updates available for kernels."
+            echo "CHANGED=false" >> $GITHUB_ENV
+          else
+            echo "Kernel updates found!"
+            echo "CHANGED=true" >> $GITHUB_ENV
+            echo "--- Updated dependencies ---"
+            cat go.mod | grep -E "hysteria|replace"
+          fi
+
+      - name: Commit and Create Release
+        if: env.CHANGED == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 提交依赖更新
+          git add go.mod go.sum
+          git commit -m "build(deps): auto-update core dependencies (xray/sing-box/hysteria)"
+
+          # 推送到 dev_new
+          git push origin dev_new
+
+          # 使用当前日期生成版本号作为 tag
+          VERSION_TAG="v1.0.$(date +'%Y%m%d%H%M')"
+          echo "Generating new release tag: $VERSION_TAG"
+
+          # 创建 GitHub Release，这将自动触发 Release.yml 中的构建和 Docker 发布流程
+          gh release create $VERSION_TAG \
+            --title "Core Update $VERSION_TAG" \
+            --notes "Automated release due to upstream core dependency updates (xray-core / sing-box / hysteria2)." \
+            --target dev_new

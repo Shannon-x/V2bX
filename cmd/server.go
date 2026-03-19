@@ -54,12 +54,14 @@ func serverHandle(_ *cobra.Command, _ []string) {
 	case "error":
 		log.SetLevel(log.ErrorLevel)
 	}
+	var logFile *os.File
 	if c.LogConfig.Output != "" {
-		f, err := os.OpenFile(c.LogConfig.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		logFile, err = os.OpenFile(c.LogConfig.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
 			log.WithField("err", err).Error("Open log file failed, using stdout instead")
+		} else {
+			log.SetOutput(logFile)
 		}
-		log.SetOutput(f)
 	}
 	// Validate configuration
 	if warnings := c.Validate(); len(warnings) > 0 {
@@ -129,5 +131,12 @@ func serverHandle(_ *cobra.Command, _ []string) {
 		osSignals := make(chan os.Signal, 1)
 		signal.Notify(osSignals, syscall.SIGINT, syscall.SIGTERM)
 		<-osSignals
+	}
+	// graceful shutdown
+	log.Info("Shutting down...")
+	c.StopWatch()
+	nodes.Close()
+	if logFile != nil {
+		logFile.Close()
 	}
 }

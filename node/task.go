@@ -159,7 +159,7 @@ func (c *Controller) nodeInfoMonitor() (err error) {
 		}
 		if c.userReportPeriodic.Interval != newN.PushInterval &&
 			newN.PushInterval != 0 {
-			c.userReportPeriodic.Interval = newN.PullInterval
+			c.userReportPeriodic.Interval = newN.PushInterval
 			c.userReportPeriodic.Close()
 			_ = c.userReportPeriodic.Start(false)
 		}

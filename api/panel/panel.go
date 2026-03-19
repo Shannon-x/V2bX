@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -37,9 +38,13 @@ func New(c *conf.ApiConfig) (*Client, error) {
 		client = resty.NewWithLocalAddr(&net.TCPAddr{
 			IP: net.ParseIP(c.APISendIP),
 		})
-	} else {	
+	} else {
 		client = resty.New()
 	}
+	client.SetTransport(&http.Transport{
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	})
 	client.SetRetryCount(3)
 	if c.Timeout > 0 {
 		client.SetTimeout(time.Duration(c.Timeout) * time.Second)

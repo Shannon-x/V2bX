@@ -27,36 +27,30 @@ func (v *V2bX) Authenticate(addr net.Addr, auth string, tx uint64) (ok bool, id 
 }
 
 func (h *Hysteria2) AddUsers(p *vCore.AddUsersParams) (added int, err error) {
-	var wg sync.WaitGroup
+	h.Auth.mutex.Lock()
 	for _, user := range p.Users {
-		wg.Add(1)
-		go func(u panel.UserInfo) {
-			defer wg.Done()
-			h.Auth.mutex.Lock()
-			h.Auth.usersMap[u.Uuid] = u.Id
-			h.Auth.mutex.Unlock()
-		}(user)
+		h.Auth.usersMap[user.Uuid] = user.Id
 	}
-	wg.Wait()
+	h.Auth.mutex.Unlock()
 	return len(p.Users), nil
 }
 
 func (h *Hysteria2) DelUsers(users []panel.UserInfo, tag string, _ *panel.NodeInfo) error {
-	var wg sync.WaitGroup
-	for _, user := range users {
-		wg.Add(1)
-		if v, ok := h.Hy2nodes[tag].TrafficLogger.(*HookServer).Counter.Load(tag); ok {
-			c := v.(*counter.TrafficCounter)
-			c.Delete(user.Uuid)
+	if node, ok := h.Hy2nodes[tag]; ok {
+		if hook, ok := node.TrafficLogger.(*HookServer); ok {
+			if v, ok := hook.Counter.Load(tag); ok {
+				c := v.(*counter.TrafficCounter)
+				for _, user := range users {
+					c.Delete(user.Uuid)
+				}
+			}
 		}
-		go func(u panel.UserInfo) {
-			defer wg.Done()
-			h.Auth.mutex.Lock()
-			delete(h.Auth.usersMap, u.Uuid)
-			h.Auth.mutex.Unlock()
-		}(user)
 	}
-	wg.Wait()
+	h.Auth.mutex.Lock()
+	for _, user := range users {
+		delete(h.Auth.usersMap, user.Uuid)
+	}
+	h.Auth.mutex.Unlock()
 	return nil
 }
 

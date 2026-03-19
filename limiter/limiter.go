@@ -124,14 +124,24 @@ func DeleteLimiter(tag string) {
 }
 
 func (l *Limiter) UpdateUser(tag string, added []panel.UserInfo, deleted []panel.UserInfo) {
+	if len(deleted) > 0 {
+		// Copy-on-write for AliveList to avoid concurrent map write panic
+		if al := l.AliveList.Load(); al != nil {
+			newAl := make(map[int]int, len(*al))
+			for k, v := range *al {
+				newAl[k] = v
+			}
+			for i := range deleted {
+				delete(newAl, deleted[i].Id)
+			}
+			l.AliveList.Store(&newAl)
+		}
+	}
 	for i := range deleted {
 		l.UserLimitInfo.Delete(format.UserTag(tag, deleted[i].Uuid))
 		l.UserOnlineIP.Delete(format.UserTag(tag, deleted[i].Uuid))
 		l.SpeedLimiter.Delete(format.UserTag(tag, deleted[i].Uuid))
 		l.UUIDtoUID.Delete(deleted[i].Uuid)
-		if al := l.AliveList.Load(); al != nil {
-			delete(*al, deleted[i].Id)
-		}
 	}
 	for i := range added {
 		userLimit := &UserLimitInfo{
@@ -248,24 +258,24 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 	return nil, false
 }
 
-func (l *Limiter) GetOnlineDevice() (*[]panel.OnlineUser, error) {
+func (l *Limiter) GetOnlineDevice() ([]panel.OnlineUser, error) {
 	var onlineUser []panel.OnlineUser
-	l.OldUserOnline = new(sync.Map)
+	oldOnline := new(sync.Map)
 	l.UserOnlineIP.Range(func(key, value interface{}) bool {
 		taguuid := key.(string)
 		ipMap := value.(*sync.Map)
 		ipMap.Range(func(key, value interface{}) bool {
 			uid := value.(int)
 			ip := key.(string)
-			l.OldUserOnline.Store(ip, uid)
+			oldOnline.Store(ip, uid)
 			onlineUser = append(onlineUser, panel.OnlineUser{UID: uid, IP: ip})
 			return true
 		})
 		l.UserOnlineIP.Delete(taguuid)
 		return true
 	})
-
-	return &onlineUser, nil
+	l.OldUserOnline = oldOnline
+	return onlineUser, nil
 }
 
 type UserIpList struct {

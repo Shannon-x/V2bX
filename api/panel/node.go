@@ -385,16 +385,23 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 	// parse rules and dns
 	for i := range cm.Routes {
 		var matchs []string
-		if _, ok := cm.Routes[i].Match.(string); ok {
-			matchs = strings.Split(cm.Routes[i].Match.(string), ",")
-		} else if _, ok = cm.Routes[i].Match.([]string); ok {
-			matchs = cm.Routes[i].Match.([]string)
-		} else {
-			temp := cm.Routes[i].Match.([]interface{})
-			matchs = make([]string, len(temp))
-			for i := range temp {
-				matchs[i] = temp[i].(string)
+		switch v := cm.Routes[i].Match.(type) {
+		case string:
+			matchs = strings.Split(v, ",")
+		case []string:
+			matchs = v
+		case []interface{}:
+			matchs = make([]string, 0, len(v))
+			for _, item := range v {
+				if s, ok := item.(string); ok {
+					matchs = append(matchs, s)
+				}
 			}
+		default:
+			continue
+		}
+		if len(matchs) == 0 {
+			continue
 		}
 		switch cm.Routes[i].Action {
 		case "block":

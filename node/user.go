@@ -24,11 +24,9 @@ func (c *Controller) reportUserTrafficTask() (err error) {
 
 	if onlineDevice, err := c.limiter.GetOnlineDevice(); err != nil {
 		log.Print(err)
-	} else if len(*onlineDevice) > 0 {
-		// Only report user has traffic > 100kb to allow ping test
+	} else if len(onlineDevice) > 0 {
 		var result []panel.OnlineUser
 		var nocountUID = make(map[int]struct{})
-		// Use panel-provided threshold if available, otherwise use local config
 		minTraffic := c.Options.DeviceOnlineMinTraffic
 		if c.info != nil && c.info.DeviceOnlineMinTraffic > 0 {
 			minTraffic = int64(c.info.DeviceOnlineMinTraffic)
@@ -39,14 +37,13 @@ func (c *Controller) reportUserTrafficTask() (err error) {
 				nocountUID[traffic.UID] = struct{}{}
 			}
 		}
-		for _, online := range *onlineDevice {
+		for _, online := range onlineDevice {
 			if _, ok := nocountUID[online.UID]; !ok {
 				result = append(result, online)
 			}
 		}
 		data := make(map[int][]string)
 		for _, onlineuser := range result {
-			// json structure: { UID1:["ip1","ip2"],UID2:["ip3","ip4"] }
 			data[onlineuser.UID] = append(data[onlineuser.UID], onlineuser.IP)
 		}
 		if err = c.apiClient.ReportNodeOnlineUsers(&data); err != nil {
@@ -55,7 +52,7 @@ func (c *Controller) reportUserTrafficTask() (err error) {
 				"err": err,
 			}).Info("Report online users failed")
 		} else {
-			log.WithField("tag", c.tag).Infof("Total %d online users, %d Reported", len(*onlineDevice), len(result))
+			log.WithField("tag", c.tag).Infof("Total %d online users, %d Reported", len(onlineDevice), len(result))
 			log.WithField("tag", c.tag).Debugf("Online users: %+v", data)
 		}
 	}
@@ -65,14 +62,14 @@ func (c *Controller) reportUserTrafficTask() (err error) {
 }
 
 func compareUserList(old, new []panel.UserInfo) (deleted, added []panel.UserInfo) {
-	oldMap := make(map[string]int)
+	oldMap := make(map[string]int, len(old))
 	for i, user := range old {
-		key := user.Uuid + strconv.Itoa(user.SpeedLimit)
+		key := user.Uuid + "|" + strconv.Itoa(user.SpeedLimit)
 		oldMap[key] = i
 	}
 
 	for _, user := range new {
-		key := user.Uuid + strconv.Itoa(user.SpeedLimit)
+		key := user.Uuid + "|" + strconv.Itoa(user.SpeedLimit)
 		if _, exists := oldMap[key]; !exists {
 			added = append(added, user)
 		} else {

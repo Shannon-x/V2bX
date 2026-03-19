@@ -1,16 +1,34 @@
 package conf
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
-	"strings"
+	"time"
 
 	"encoding/json"
 
 	"github.com/InazumaV/V2bX/common/json5"
 )
+
+var safeIncludeTransport = &http.Transport{
+	DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid address: %s", err)
+		}
+		ip := net.ParseIP(host)
+		if ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()) {
+			return nil, fmt.Errorf("include URL must not target private/loopback address: %s", host)
+		}
+		dialer := &net.Dialer{Timeout: 10 * time.Second}
+		return dialer.DialContext(ctx, network, addr)
+	},
+}
 
 type NodeConfig struct {
 	ApiConfig ApiConfig `json:"-"`
@@ -41,19 +59,19 @@ func (n *NodeConfig) UnmarshalJSON(data []byte) (err error) {
 		return err
 	}
 	if len(rn.Include) != 0 {
-		file, _ := strings.CutPrefix(rn.Include, ":")
-		switch file {
-		case "http", "https":
-			rsp, err := http.Get(file)
+		u, urlErr := url.Parse(rn.Include)
+		if urlErr == nil && (u.Scheme == "http" || u.Scheme == "https") {
+			httpClient := &http.Client{Timeout: 30 * time.Second, Transport: safeIncludeTransport}
+			rsp, err := httpClient.Get(rn.Include)
 			if err != nil {
-				return err
+				return fmt.Errorf("fetch include URL error: %s", err)
 			}
 			defer rsp.Body.Close()
 			data, err = io.ReadAll(json5.NewTrimNodeReader(rsp.Body))
 			if err != nil {
-				return fmt.Errorf("open include file error: %s", err)
+				return fmt.Errorf("read include URL error: %s", err)
 			}
-		default:
+		} else {
 			f, err := os.Open(rn.Include)
 			if err != nil {
 				return fmt.Errorf("open include file error: %s", err)
@@ -61,7 +79,7 @@ func (n *NodeConfig) UnmarshalJSON(data []byte) (err error) {
 			defer f.Close()
 			data, err = io.ReadAll(json5.NewTrimNodeReader(f))
 			if err != nil {
-				return fmt.Errorf("open include file error: %s", err)
+				return fmt.Errorf("read include file error: %s", err)
 			}
 		}
 		err = json.Unmarshal(data, &rn)

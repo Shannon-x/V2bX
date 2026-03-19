@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/InazumaV/V2bX/common/json5"
 
@@ -14,6 +15,10 @@ type Conf struct {
 	LogConfig   LogConfig    `json:"Log"`
 	CoresConfig []CoreConfig `json:"Cores"`
 	NodeConfig  []NodeConfig `json:"Nodes"`
+
+	mu          sync.RWMutex   `json:"-"`
+	watcherMu   sync.Mutex     `json:"-"`
+	watcherDone chan struct{}   `json:"-"`
 }
 
 func New() *Conf {

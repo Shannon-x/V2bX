@@ -245,10 +245,11 @@ func (u *User) Save(path string) error {
 		return fmt.Errorf("check path error: %s", err)
 	}
 	u.KeyEncoded, _ = EncodePrivate(u.key.(*ecdsa.PrivateKey))
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
+	defer f.Close()
 	err = json.NewEncoder(f).Encode(u)
 	if err != nil {
 		return fmt.Errorf("marshal json error: %s", err)

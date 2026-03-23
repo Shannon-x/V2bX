@@ -1,8 +1,6 @@
 package node
 
 import (
-	"strconv"
-
 	"github.com/InazumaV/V2bX/api/panel"
 	log "github.com/sirupsen/logrus"
 )
@@ -61,25 +59,26 @@ func (c *Controller) reportUserTrafficTask() (err error) {
 	return nil
 }
 
-func compareUserList(old, new []panel.UserInfo) (deleted, added []panel.UserInfo) {
-	oldMap := make(map[string]int, len(old))
-	for i, user := range old {
-		key := user.Uuid + "|" + strconv.Itoa(user.SpeedLimit)
-		oldMap[key] = i
+func compareUserList(old, new []panel.UserInfo) (deleted, added, modified []panel.UserInfo) {
+	oldMap := make(map[string]panel.UserInfo, len(old))
+	for _, u := range old {
+		oldMap[u.Uuid] = u
 	}
 
-	for _, user := range new {
-		key := user.Uuid + "|" + strconv.Itoa(user.SpeedLimit)
-		if _, exists := oldMap[key]; !exists {
-			added = append(added, user)
+	for _, u := range new {
+		if o, ok := oldMap[u.Uuid]; !ok {
+			added = append(added, u)
 		} else {
-			delete(oldMap, key)
+			if o.SpeedLimit != u.SpeedLimit || o.DeviceLimit != u.DeviceLimit {
+				modified = append(modified, u)
+			}
+			delete(oldMap, u.Uuid)
 		}
 	}
 
-	for _, index := range oldMap {
-		deleted = append(deleted, old[index])
+	for _, o := range oldMap {
+		deleted = append(deleted, o)
 	}
 
-	return deleted, added
+	return deleted, added, modified
 }

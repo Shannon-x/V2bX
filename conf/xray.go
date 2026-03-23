@@ -37,11 +37,11 @@ func NewXrayConfig() *XrayConfig {
 		OutboundConfigPath: "",
 		RouteConfigPath:    "",
 		ConnectionConfig: &XrayConnectionConfig{
-			Handshake:    10,
-			ConnIdle:     300,
-			UplinkOnly:   2,
-			DownlinkOnly: 4,
-			BufferSize:   256,
+			Handshake:    4,
+			ConnIdle:     60,
+			UplinkOnly:   1,
+			DownlinkOnly: 2,
+			BufferSize:   64,
 		},
 	}
 }

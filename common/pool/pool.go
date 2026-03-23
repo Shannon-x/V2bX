@@ -5,10 +5,12 @@ import (
 )
 
 const (
-	Small  = 1 << 10  // 1KB
-	Medium = 8 << 10  // 8KB
-	Large  = 32 << 10 // 32KB
-	Huge   = 64 << 10 // 64KB
+	Small   = 1 << 10   // 1KB
+	Medium  = 8 << 10   // 8KB
+	Large   = 32 << 10  // 32KB
+	Huge    = 64 << 10  // 64KB
+	XLarge  = 128 << 10 // 128KB
+	XXLarge = 256 << 10 // 256KB
 )
 
 var (
@@ -24,6 +26,12 @@ var (
 	hugePool = sync.Pool{
 		New: func() any { b := make([]byte, Huge); return &b },
 	}
+	xLargePool = sync.Pool{
+		New: func() any { b := make([]byte, XLarge); return &b },
+	}
+	xxLargePool = sync.Pool{
+		New: func() any { b := make([]byte, XXLarge); return &b },
+	}
 )
 
 // Get returns a buffer pointer of at least the given size from the pool.
@@ -37,6 +45,10 @@ func Get(size int) *[]byte {
 		return largePool.Get().(*[]byte)
 	case size <= Huge:
 		return hugePool.Get().(*[]byte)
+	case size <= XLarge:
+		return xLargePool.Get().(*[]byte)
+	case size <= XXLarge:
+		return xxLargePool.Get().(*[]byte)
 	default:
 		b := make([]byte, size)
 		return &b
@@ -49,15 +61,19 @@ func Put(b *[]byte) {
 		return
 	}
 	size := cap(*b)
-	switch {
-	case size == Small:
+	switch size {
+	case Small:
 		smallPool.Put(b)
-	case size == Medium:
+	case Medium:
 		mediumPool.Put(b)
-	case size == Large:
+	case Large:
 		largePool.Put(b)
-	case size == Huge:
+	case Huge:
 		hugePool.Put(b)
+	case XLarge:
+		xLargePool.Put(b)
+	case XXLarge:
+		xxLargePool.Put(b)
 	// Non-standard sizes are not returned to pool
 	}
 }

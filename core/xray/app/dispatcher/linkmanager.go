@@ -9,7 +9,7 @@ import (
 )
 
 type ManagedWriter struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	writer  buf.Writer
 	manager *LinkManager
 	closed  bool
@@ -23,9 +23,9 @@ func newManagedWriter(writer buf.Writer, manager *LinkManager) *ManagedWriter {
 }
 
 func (w *ManagedWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
-	w.mu.Lock()
+	w.mu.RLock()
 	writer := w.writer
-	w.mu.Unlock()
+	w.mu.RUnlock()
 	if writer == nil {
 		return io.ErrClosedPipe
 	}
@@ -53,7 +53,7 @@ func (w *ManagedWriter) Close() error {
 
 type LinkManager struct {
 	links map[*ManagedWriter]buf.Reader
-	mu    sync.Mutex
+	mu    sync.RWMutex
 }
 
 func (m *LinkManager) AddLink(writer *ManagedWriter, reader buf.Reader) {

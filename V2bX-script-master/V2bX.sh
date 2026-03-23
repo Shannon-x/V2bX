@@ -304,7 +304,12 @@ install_bbr() {
 }
 
 update_shell() {
-    wget -O /usr/bin/V2bX -N --no-check-certificate https://raw.githubusercontent.com/Shannon-x/V2bX/dev_new/V2bX-script-master/V2bX.sh
+    local shell_url="https://raw.githubusercontent.com/Shannon-x/V2bX/dev_new/V2bX-script-master/V2bX.sh"
+    if [[ x"${release}" == x"alpine" ]]; then
+        curl -L -o /usr/bin/V2bX --retry 3 --retry-delay 2 "${shell_url}"
+    else
+        wget -O /usr/bin/V2bX -N --no-check-certificate "${shell_url}"
+    fi
     if [[ $? != 0 ]]; then
         echo ""
         echo -e "${red}下载脚本失败，请检查本机能否连接 Github${plain}"

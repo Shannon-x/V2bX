@@ -91,7 +91,7 @@ install_base() {
         yum install epel-release wget curl unzip tar crontabs socat ca-certificates -y >/dev/null 2>&1
         update-ca-trust force-enable >/dev/null 2>&1
     elif [[ x"${release}" == x"alpine" ]]; then
-        apk add wget curl unzip tar socat ca-certificates >/dev/null 2>&1
+        apk add wget curl unzip tar socat ca-certificates bash >/dev/null 2>&1
         update-ca-certificates >/dev/null 2>&1
     elif [[ x"${release}" == x"debian" ]]; then
         apt-get update -y >/dev/null 2>&1
@@ -149,7 +149,13 @@ install_V2bX() {
         echo -e "开始安装 V2bX ${last_version}"
     fi
 
-    wget --no-check-certificate -N --progress=bar -O /usr/local/V2bX/V2bX-linux.zip https://github.com/Shannon-x/V2bX/releases/download/${last_version}/V2bX-linux-${arch}.zip
+    local download_url="https://github.com/Shannon-x/V2bX/releases/download/${last_version}/V2bX-linux-${arch}.zip"
+    local download_dest="/usr/local/V2bX/V2bX-linux.zip"
+    if [[ x"${release}" == x"alpine" ]]; then
+        curl -L -o "${download_dest}" --progress-bar --retry 3 --retry-delay 2 "${download_url}"
+    else
+        wget --no-check-certificate -N --progress=bar -O "${download_dest}" "${download_url}"
+    fi
     if [[ $? -ne 0 ]]; then
         echo -e "${red}下载 V2bX ${last_version} 失败，请确保你的服务器能够下载 Github 的文件${plain}"
         exit 1

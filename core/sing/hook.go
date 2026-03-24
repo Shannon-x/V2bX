@@ -59,6 +59,27 @@ func (h *HookServer) RoutedConnection(_ context.Context, conn net.Conn, m adapte
 			conn.Close()
 			return conn
 		}
+		// Block IP rules
+		if m.Destination.Addr.IsValid() && !m.Destination.IsFqdn() {
+			ipStr := m.Destination.Addr.String()
+			if l.CheckIPRule(ipStr) {
+				log.Error(fmt.Sprintf(
+					"User %s access IP %s reject by rule",
+					m.User,
+					ipStr))
+				conn.Close()
+				return conn
+			}
+		}
+		// Block port rules
+		if l.CheckPortRule(int(m.Destination.Port)) {
+			log.Error(fmt.Sprintf(
+				"User %s access port %d reject by rule",
+				m.User,
+				m.Destination.Port))
+			conn.Close()
+			return conn
+		}
 		if len(protocol) != 0 {
 			if l.CheckProtocolRule(protocol) {
 				log.Error(fmt.Sprintf(
@@ -110,6 +131,27 @@ func (h *HookServer) RoutedPacketConnection(_ context.Context, conn N.PacketConn
 				"User %s access domain %s reject by rule",
 				m.User,
 				destStr))
+			conn.Close()
+			return conn
+		}
+		// Block IP rules
+		if m.Destination.Addr.IsValid() && !m.Destination.IsFqdn() {
+			ipStr := m.Destination.Addr.String()
+			if l.CheckIPRule(ipStr) {
+				log.Error(fmt.Sprintf(
+					"User %s access IP %s reject by rule",
+					m.User,
+					ipStr))
+				conn.Close()
+				return conn
+			}
+		}
+		// Block port rules
+		if l.CheckPortRule(int(m.Destination.Port)) {
+			log.Error(fmt.Sprintf(
+				"User %s access port %d reject by rule",
+				m.User,
+				m.Destination.Port))
 			conn.Close()
 			return conn
 		}

@@ -2,6 +2,7 @@ package limiter
 
 import (
 	"errors"
+	"net"
 	"regexp"
 	"strings"
 	"sync"
@@ -21,9 +22,14 @@ func Init() {
 }
 
 type Limiter struct {
-	DomainRules   []*regexp.Regexp
-	ProtocolRules []string
-	SpeedLimit    int
+	DomainRules     []*regexp.Regexp
+	ProtocolRules   []string
+	IPRules         []*net.IPNet         // block_ip: CIDR networks to block
+	PortRules       []PortRange          // block_port: port ranges to block
+	RouteRules      []panel.RouteRule    // route/route_ip/direct/proxy rules (compiled)
+	RouteDomainRe   []*regexp.Regexp     // compiled domain regexps for RouteRules
+	DefaultOutbound string               // default_out: custom default outbound tag
+	SpeedLimit      int
 
 	// User online IP tracking: RWMutex + map replaces nested sync.Map
 	// for better performance under high write concurrency.

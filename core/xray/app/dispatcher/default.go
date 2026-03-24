@@ -551,11 +551,14 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 		}
 		if l != nil {
 			var destStr string
+			var destIP string
 			if destination.Address.Family().IsDomain() {
 				destStr = destination.Address.Domain()
 			} else {
-				destStr = destination.Address.IP().String()
+				destIP = destination.Address.IP().String()
+				destStr = destIP
 			}
+			// Block domain rules
 			if l.CheckDomainRule(destStr) {
 				errors.LogError(ctx, fmt.Sprintf(
 					"User %s access domain %s reject by rule",
@@ -565,6 +568,27 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 				common.Interrupt(link.Reader)
 				return
 			}
+			// Block IP rules
+			if destIP != "" && l.CheckIPRule(destIP) {
+				errors.LogError(ctx, fmt.Sprintf(
+					"User %s access IP %s reject by rule",
+					sessionInbound.User.Email,
+					destIP))
+				common.Close(link.Writer)
+				common.Interrupt(link.Reader)
+				return
+			}
+			// Block port rules
+			if l.CheckPortRule(int(destination.Port)) {
+				errors.LogError(ctx, fmt.Sprintf(
+					"User %s access port %d reject by rule",
+					sessionInbound.User.Email,
+					destination.Port))
+				common.Close(link.Writer)
+				common.Interrupt(link.Reader)
+				return
+			}
+			// Protocol rules
 			if len(protocol) != 0 {
 				if l.CheckProtocolRule(protocol) {
 					errors.LogError(ctx, fmt.Sprintf(
@@ -573,6 +597,23 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 						protocol))
 					common.Close(link.Writer)
 					common.Interrupt(link.Reader)
+					return
+				}
+			}
+			// Route rules (route/route_ip/direct/proxy)
+			if routeTag := l.CheckRouteRule(destStr, destIP); routeTag != "" {
+				errors.LogInfo(ctx, fmt.Sprintf(
+					"User %s route %s to outbound [%s] by rule",
+					sessionInbound.User.Email,
+					destStr,
+					routeTag))
+				if h := d.ohm.GetHandler(routeTag); h != nil {
+					ob.Tag = h.Tag()
+					if accessMessage := log.AccessMessageFromContext(ctx); accessMessage != nil {
+						accessMessage.Detour = sessionInbound.Tag + " => " + h.Tag()
+						log.Record(accessMessage)
+					}
+					h.Dispatch(ctx, link)
 					return
 				}
 			}

@@ -513,24 +513,40 @@ add_node_config() {
         esac
     fi
 
-    # TLS/Reality 配置
+    # 安全模式配置
     isreality=""
     istls=""
     enable_tfo=true
+    certmode="none"
+    certdomain="example.com"
+
     if [ "$NodeType" == "vless" ]; then
-        read -rp "请选择是否为reality节点？(y/n)" isreality
+        echo -e "${yellow}请选择 VLESS 安全模式：${plain}"
+        echo -e "${green}1. Reality${plain}（推荐，无需本地证书，由面板下发 Reality 参数）"
+        echo -e "${green}2. TLS${plain}（需要本地配置 TLS 证书）"
+        echo -e "${green}3. 无 TLS${plain}（适用于 VLESS Encryption 或纯 VLESS，加密由面板控制）"
+        read -rp "请输入 [默认1]：" vless_security
+        case "$vless_security" in
+            2 )
+                istls="y"
+                ;;
+            3 )
+                # 无 TLS，CertMode 保持 none
+                ;;
+            * )
+                isreality="y"
+                ;;
+        esac
+    elif [ "$NodeType" == "vmess" ] || [ "$NodeType" == "shadowsocks" ]; then
+        read -rp "是否配置 TLS 证书？(y/n)" istls
+    elif [ "$NodeType" == "trojan" ]; then
+        istls="y"
     elif [ "$NodeType" == "hysteria" ] || [ "$NodeType" == "hysteria2" ] || [ "$NodeType" == "tuic" ] || [ "$NodeType" == "anytls" ]; then
         enable_tfo=false
         istls="y"
     fi
 
-    if [[ "$isreality" != "y" && "$isreality" != "Y" && "$istls" != "y" ]]; then
-        read -rp "请选择是否进行TLS配置？(y/n)" istls
-    fi
-
-    certmode="none"
-    certdomain="example.com"
-    if [[ "$isreality" != "y" && "$isreality" != "Y" && ( "$istls" == "y" || "$istls" == "Y" ) ]]; then
+    if [[ "$istls" == "y" || "$istls" == "Y" ]]; then
         echo -e "${yellow}请选择证书申请模式：${plain}"
         echo -e "${green}1. http模式自动申请，节点域名已正确解析${plain}"
         echo -e "${green}2. dns模式自动申请，需填入正确域名服务商API参数${plain}"
@@ -974,6 +990,205 @@ EOF
     before_show_menu
 }
 
+# =====================================================
+# 增加节点（向现有 config.json 追加）
+# =====================================================
+add_single_node() {
+    if [[ ! -f /etc/V2bX/config.json ]]; then
+        echo -e "${red}未找到配置文件 /etc/V2bX/config.json，请先使用"生成配置文件"功能${plain}"
+        before_show_menu
+        return
+    fi
+
+    echo -e "${yellow}=== 向现有配置添加节点 ===${plain}"
+
+    nodes_config=()
+    core_xray=false
+    core_sing=false
+    core_hysteria2=false
+    fixed_api_info=false
+    fixed_api_version=""
+
+    # 读取现有配置中的 ApiHost/ApiKey 作为默认值
+    existing_apihost=$(grep -o '"ApiHost"[[:space:]]*:[[:space:]]*"[^"]*"' /etc/V2bX/config.json | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    existing_apikey=$(grep -o '"ApiKey"[[:space:]]*:[[:space:]]*"[^"]*"' /etc/V2bX/config.json | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+
+    if [ -n "$existing_apihost" ]; then
+        read -rp "请输入机场网址 [默认: ${existing_apihost}]：" ApiHost
+        if [ -z "$ApiHost" ]; then
+            ApiHost="$existing_apihost"
+        fi
+    else
+        read -rp "请输入机场网址(https://example.com)：" ApiHost
+    fi
+    if [ -n "$existing_apikey" ]; then
+        read -rp "请输入面板对接API Key [默认: ${existing_apikey}]：" ApiKey
+        if [ -z "$ApiKey" ]; then
+            ApiKey="$existing_apikey"
+        fi
+    else
+        read -rp "请输入面板对接API Key：" ApiKey
+    fi
+
+    add_node_config
+
+    if [ ${#nodes_config[@]} -eq 0 ]; then
+        echo -e "${red}没有添加任何节点配置${plain}"
+        before_show_menu
+        return
+    fi
+
+    # 确认已有的核心配置
+    need_add_core=""
+    if [ "$core_xray" = true ]; then
+        if ! grep -q '"Type"[[:space:]]*:[[:space:]]*"xray"' /etc/V2bX/config.json; then
+            need_add_core="xray"
+        fi
+    fi
+    if [ "$core_sing" = true ]; then
+        if ! grep -q '"Type"[[:space:]]*:[[:space:]]*"sing"' /etc/V2bX/config.json; then
+            need_add_core="${need_add_core} sing"
+        fi
+    fi
+    if [ "$core_hysteria2" = true ]; then
+        if ! grep -q '"Type"[[:space:]]*:[[:space:]]*"hysteria2"' /etc/V2bX/config.json; then
+            need_add_core="${need_add_core} hysteria2"
+        fi
+    fi
+    if [ -n "$need_add_core" ]; then
+        echo -e "${yellow}警告：新节点使用的核心 (${need_add_core}) 未在现有配置中找到，请确认 Cores 配置中已包含对应核心${plain}"
+    fi
+
+    # 使用 python3/python 来安全地追加 JSON 节点
+    local py_cmd=""
+    if command -v python3 &>/dev/null; then
+        py_cmd="python3"
+    elif command -v python &>/dev/null; then
+        py_cmd="python"
+    fi
+
+    if [ -n "$py_cmd" ]; then
+        # 去除节点配置末尾的逗号
+        local new_node="${nodes_config[0]}"
+        new_node="${new_node%,}"
+
+        cp /etc/V2bX/config.json /etc/V2bX/config.json.bak
+        $py_cmd -c "
+import json, sys
+try:
+    with open('/etc/V2bX/config.json', 'r') as f:
+        config = json.load(f)
+    new_node = json.loads('''${new_node}''')
+    if 'Nodes' not in config:
+        config['Nodes'] = []
+    config['Nodes'].append(new_node)
+    with open('/etc/V2bX/config.json', 'w') as f:
+        json.dump(config, f, indent=4, ensure_ascii=False)
+    print('OK')
+except Exception as e:
+    print(f'ERROR: {e}', file=sys.stderr)
+    sys.exit(1)
+"
+        if [[ $? -eq 0 ]]; then
+            echo -e "${green}节点添加成功！${plain}"
+            echo -e "${yellow}正在重启 V2bX...${plain}"
+            restart 0
+        else
+            echo -e "${red}节点添加失败，已恢复备份${plain}"
+            mv /etc/V2bX/config.json.bak /etc/V2bX/config.json
+        fi
+    else
+        echo -e "${red}未找到 python3/python，无法安全操作 JSON。请手动编辑 /etc/V2bX/config.json${plain}"
+    fi
+    before_show_menu
+}
+
+# =====================================================
+# 删除节点
+# =====================================================
+delete_node() {
+    if [[ ! -f /etc/V2bX/config.json ]]; then
+        echo -e "${red}未找到配置文件 /etc/V2bX/config.json${plain}"
+        before_show_menu
+        return
+    fi
+
+    local py_cmd=""
+    if command -v python3 &>/dev/null; then
+        py_cmd="python3"
+    elif command -v python &>/dev/null; then
+        py_cmd="python"
+    fi
+
+    if [ -z "$py_cmd" ]; then
+        echo -e "${red}未找到 python3/python，无法安全操作 JSON。请手动编辑 /etc/V2bX/config.json${plain}"
+        before_show_menu
+        return
+    fi
+
+    echo -e "${yellow}=== 当前已配置的节点 ===${plain}"
+    $py_cmd -c "
+import json
+try:
+    with open('/etc/V2bX/config.json', 'r') as f:
+        config = json.load(f)
+    nodes = config.get('Nodes', [])
+    if not nodes:
+        print('未找到任何节点配置')
+    else:
+        for i, node in enumerate(nodes):
+            core = node.get('Core', '未知')
+            node_type = node.get('NodeType', '未知')
+            node_id = node.get('NodeID', '未知')
+            api_host = node.get('ApiHost', '未知')
+            print(f'  {i+1}. [{core}] {node_type} | NodeID: {node_id} | {api_host}')
+        print(f'\n共 {len(nodes)} 个节点')
+except Exception as e:
+    print(f'读取配置失败: {e}')
+"
+    echo ""
+    read -rp "请输入要删除的节点编号（输入 0 取消）：" del_index
+
+    if [[ "$del_index" == "0" ]] || [[ -z "$del_index" ]]; then
+        echo "已取消"
+        before_show_menu
+        return
+    fi
+
+    cp /etc/V2bX/config.json /etc/V2bX/config.json.bak
+    $py_cmd -c "
+import json, sys
+try:
+    with open('/etc/V2bX/config.json', 'r') as f:
+        config = json.load(f)
+    nodes = config.get('Nodes', [])
+    idx = int('${del_index}') - 1
+    if idx < 0 or idx >= len(nodes):
+        print('错误：编号超出范围', file=sys.stderr)
+        sys.exit(1)
+    removed = nodes.pop(idx)
+    config['Nodes'] = nodes
+    with open('/etc/V2bX/config.json', 'w') as f:
+        json.dump(config, f, indent=4, ensure_ascii=False)
+    core = removed.get('Core', '未知')
+    ntype = removed.get('NodeType', '未知')
+    nid = removed.get('NodeID', '未知')
+    print(f'已删除节点: [{core}] {ntype} NodeID:{nid}')
+except Exception as e:
+    print(f'ERROR: {e}', file=sys.stderr)
+    sys.exit(1)
+"
+    if [[ $? -eq 0 ]]; then
+        echo -e "${green}节点删除成功！${plain}"
+        echo -e "${yellow}正在重启 V2bX...${plain}"
+        restart 0
+    else
+        echo -e "${red}节点删除失败，已恢复备份${plain}"
+        mv /etc/V2bX/config.json.bak /etc/V2bX/config.json
+    fi
+    before_show_menu
+}
+
 # 放开防火墙端口
 open_ports() {
     systemctl stop firewalld.service 2>/dev/null
@@ -1009,6 +1224,8 @@ show_usage() {
     echo "V2bX install      - 安装 V2bX"
     echo "V2bX uninstall    - 卸载 V2bX"
     echo "V2bX version      - 查看 V2bX 版本"
+    echo "V2bX addnode      - 添加节点"
+    echo "V2bX delnode      - 删除节点"
     echo "------------------------------------------"
 }
 
@@ -1037,10 +1254,14 @@ show_menu() {
   ${green}14.${plain} 升级 V2bX 维护脚本
   ${green}15.${plain} 生成 V2bX 配置文件
   ${green}16.${plain} 放行 VPS 的所有网络端口
-  ${green}17.${plain} 退出脚本
+————————————————
+  ${green}17.${plain} 添加节点
+  ${green}18.${plain} 删除节点
+————————————————
+  ${green}19.${plain} 退出脚本
  "
     show_status
-    echo && read -rp "请输入选择 [0-17]: " num
+    echo && read -rp "请输入选择 [0-19]: " num
 
     case "${num}" in
         0) config ;;
@@ -1060,8 +1281,10 @@ show_menu() {
         14) update_shell ;;
         15) generate_config_file ;;
         16) open_ports ;;
-        17) exit ;;
-        *) echo -e "${red}请输入正确的数字 [0-17]${plain}" ;;
+        17) check_install && add_single_node ;;
+        18) check_install && delete_node ;;
+        19) exit ;;
+        *) echo -e "${red}请输入正确的数字 [0-19]${plain}" ;;
     esac
 }
 
@@ -1083,6 +1306,8 @@ if [[ $# > 0 ]]; then
         "x25519") check_install 0 && generate_x25519_key 0 ;;
         "version") check_install 0 && show_V2bX_version 0 ;;
         "update_shell") update_shell ;;
+        "addnode") check_install 0 && add_single_node ;;
+        "delnode") check_install 0 && delete_node ;;
         *) show_usage
     esac
 else

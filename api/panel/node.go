@@ -151,8 +151,19 @@ type RawDNS struct {
 }
 
 type Rules struct {
-	Regexp   []string
-	Protocol []string
+	Regexp     []string
+	Protocol   []string
+	InboundIP  []string    // block_ip: IP/CIDR patterns to block
+	InboundPort []string   // block_port: port/port-range to block
+	RouteRules []RouteRule // route/route_ip/direct/proxy rules
+	DefaultOut string      // default_out: custom default outbound tag
+}
+
+// RouteRule represents a dynamic routing rule from the panel
+type RouteRule struct {
+	Type        string   // "domain" or "ip"
+	Match       []string // match patterns
+	OutboundTag string   // target outbound tag
 }
 
 // V2UnifiedNode is the flat config format from V2 API (/api/v2/server/config).
@@ -407,13 +418,35 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 		case "block":
 			for _, v := range matchs {
 				if strings.HasPrefix(v, "protocol:") {
-					// protocol
 					node.Rules.Protocol = append(node.Rules.Protocol, strings.TrimPrefix(v, "protocol:"))
 				} else {
-					// domain
 					node.Rules.Regexp = append(node.Rules.Regexp, strings.TrimPrefix(v, "regexp:"))
 				}
 			}
+		case "block_ip":
+			node.Rules.InboundIP = append(node.Rules.InboundIP, matchs...)
+		case "block_port":
+			node.Rules.InboundPort = append(node.Rules.InboundPort, matchs...)
+		case "protocol":
+			node.Rules.Protocol = append(node.Rules.Protocol, matchs...)
+		case "route":
+			node.Rules.RouteRules = append(node.Rules.RouteRules, RouteRule{
+				Type: "domain", Match: matchs, OutboundTag: cm.Routes[i].ActionValue,
+			})
+		case "route_ip":
+			node.Rules.RouteRules = append(node.Rules.RouteRules, RouteRule{
+				Type: "ip", Match: matchs, OutboundTag: cm.Routes[i].ActionValue,
+			})
+		case "default_out":
+			node.Rules.DefaultOut = cm.Routes[i].ActionValue
+		case "direct":
+			node.Rules.RouteRules = append(node.Rules.RouteRules, RouteRule{
+				Type: "domain", Match: matchs, OutboundTag: "direct",
+			})
+		case "proxy":
+			node.Rules.RouteRules = append(node.Rules.RouteRules, RouteRule{
+				Type: "domain", Match: matchs, OutboundTag: "proxy",
+			})
 		case "dns":
 			var domains []string
 			domains = append(domains, matchs...)

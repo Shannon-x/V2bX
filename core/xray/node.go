@@ -7,6 +7,7 @@ import (
 
 	"github.com/InazumaV/V2bX/api/panel"
 	"github.com/InazumaV/V2bX/conf"
+	"github.com/InazumaV/V2bX/core/xray/app/dispatcher"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/inbound"
 	"github.com/xtls/xray-core/features/outbound"
@@ -90,6 +91,7 @@ func (c *Xray) DelNode(tag string) error {
 	c.dispatcher.LinkManagers.Range(func(key, value interface{}) bool {
 		email := key.(string)
 		if strings.HasPrefix(email, prefix) {
+			value.(*dispatcher.LinkManager).CloseAll()
 			c.dispatcher.LinkManagers.Delete(key)
 		}
 		return true

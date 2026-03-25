@@ -89,6 +89,11 @@ func (x *Xray) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 				// Below threshold, add back to avoid losing small amounts
 				traffic.UpCounter.Add(up)
 				traffic.DownCounter.Add(down)
+			} else if reset && up == 0 && down == 0 {
+				// Completely idle entry — clean up if user is no longer active
+				if x.users.uidMap[email] == 0 {
+					c.Delete(email)
+				}
 			}
 			return true
 		})

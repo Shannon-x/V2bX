@@ -1,9 +1,5 @@
 package conf
 
-import (
-	"github.com/sagernet/sing-box/option"
-)
-
 type SingConfig struct {
 	LogConfig    SingLogConfig `json:"Log"`
 	NtpConfig    SingNtpConfig `json:"NTP"`
@@ -36,7 +32,7 @@ type SingOptions struct {
 	SniffEnabled             bool                   `json:"EnableSniff"`
 	SniffOverrideDestination bool                   `json:"SniffOverrideDestination"`
 	EnableDNS                bool                   `json:"EnableDNS"`
-	DomainStrategy           option.DomainStrategy  `json:"DomainStrategy"`
+	DomainStrategy           int                    `json:"DomainStrategy"`
 	FallBackConfigs          *FallBackConfigForSing `json:"FallBackConfigs"`
 	Multiplex                *MultiplexConfig       `json:"MultiplexConfig"`
 }

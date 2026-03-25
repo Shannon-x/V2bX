@@ -22,6 +22,7 @@ add_node_config() {
     echo -e "${green}请选择节点核心类型：${plain}"
     echo -e "${green}1. xray${plain}"
     echo -e "${green}2. hysteria2${plain}"
+    echo -e "${green}3. sing-box${plain}"
     read -rp "请输入：" core_type
     if [ "$core_type" == "1" ]; then
         core="xray"
@@ -29,8 +30,11 @@ add_node_config() {
     elif [ "$core_type" == "2" ]; then
         core="hysteria2"
         core_hysteria2=true
+    elif [ "$core_type" == "3" ]; then
+        core="sing"
+        core_sing=true
     else
-        echo "无效的选择。请选择 1 或 2。"
+        echo "无效的选择。请选择 1、2 或 3。"
         return 1
     fi
     while true; do
@@ -182,6 +186,39 @@ EOF
         },
 EOF
 )
+    elif [ "$core_type" == "3" ]; then
+        # Sing-box 节点配置
+        node_config=$(cat <<EOF
+{
+            "Core": "$core",
+            "ApiHost": "$ApiHost",
+            "ApiKey": "$ApiKey",
+            "NodeID": $NodeID,
+            "NodeType": "$NodeType",
+            "Timeout": 30,
+            "ApiVersion": $api_version,
+            "ListenIP": "0.0.0.0",
+            "SendIP": "0.0.0.0",
+            "DeviceOnlineMinTraffic": 200,
+            "ReportMinTraffic": 0,
+            "EnableTFO": false,
+            "EnableSniff": true,
+            "SniffOverrideDestination": true,
+            "CertConfig": {
+                "CertMode": "$certmode",
+                "RejectUnknownSni": false,
+                "CertDomain": "$certdomain",
+                "CertFile": "/etc/V2bX/${certdomain}.cert.pem",
+                "KeyFile": "/etc/V2bX/${certdomain}.key.pem",
+                "Email": "v2bx@github.com",
+                "Provider": "cloudflare",
+                "DNSEnv": {
+                    "EnvName": "env1"
+                }
+            }
+        },
+EOF
+)
     fi
     nodes_config+=("$node_config")
 }
@@ -191,7 +228,7 @@ generate_config_file() {
     echo -e "${red}请阅读以下注意事项：${plain}"
     echo -e "${red}1. 生成的配置文件会保存到 /etc/V2bX/config.json${plain}"
     echo -e "${red}2. 原来的配置文件会保存到 /etc/V2bX/config.json.bak${plain}"
-    echo -e "${red}3. 支持 Xray / Hysteria2 核心${plain}"
+    echo -e "${red}3. 支持 Xray / Hysteria2 / Sing-box 核心${plain}"
     echo -e "${red}4. Xray 核心已内置高性能连接参数优化${plain}"
     echo -e "${red}5. 使用此功能生成的配置文件会自带审计规则，确定继续？(y/n)${plain}"
     read -rp "请输入：" continue_prompt
@@ -262,6 +299,24 @@ generate_config_file() {
         \"Type\": \"hysteria2\",
         \"Log\": {
             \"Level\": \"error\"
+        }
+    },"
+    fi
+
+    # Sing-box 核心配置
+    if [ "$core_sing" = true ]; then
+        cores_config+="
+    {
+        \"Type\": \"sing\",
+        \"Log\": {
+            \"Disable\": false,
+            \"Level\": \"error\",
+            \"Timestamp\": true
+        },
+        \"NTP\": {
+            \"Enable\": false,
+            \"Server\": \"time.apple.com\",
+            \"ServerPort\": 0
         }
     },"
     fi

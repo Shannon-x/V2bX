@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/InazumaV/V2bX/api/panel"
 	"github.com/InazumaV/V2bX/conf"
@@ -48,6 +49,14 @@ func (c *Xray) AddNode(tag string, info *panel.NodeInfo, config *conf.Options) e
 	return nil
 }
 
+func (c *Xray) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, config *conf.Options) {
+	reportMin := config.ReportMinTraffic
+	if info.NodeReportMinTraffic > 0 {
+		reportMin = int64(info.NodeReportMinTraffic)
+	}
+	c.nodeReportMinTrafficBytes[tag] = reportMin * 1024
+}
+
 func (c *Xray) addInbound(config *core.InboundHandlerConfig) error {
 	rawHandler, err := core.CreateObject(c.Server, config)
 	if err != nil {
@@ -57,7 +66,9 @@ func (c *Xray) addInbound(config *core.InboundHandlerConfig) error {
 	if !ok {
 		return fmt.Errorf("not an InboundHandler: %s", err)
 	}
-	if err := c.ihm.AddHandler(context.Background(), handler); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := c.ihm.AddHandler(ctx, handler); err != nil {
 		return err
 	}
 	return nil
@@ -72,7 +83,9 @@ func (c *Xray) addOutbound(config *core.OutboundHandlerConfig) error {
 	if !ok {
 		return fmt.Errorf("not an InboundHandler: %s", err)
 	}
-	if err := c.ohm.AddHandler(context.Background(), handler); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := c.ohm.AddHandler(ctx, handler); err != nil {
 		return err
 	}
 	return nil
@@ -109,10 +122,14 @@ func (c *Xray) DelNode(tag string) error {
 }
 
 func (c *Xray) removeInbound(tag string) error {
-	return c.ihm.RemoveHandler(context.Background(), tag)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.ihm.RemoveHandler(ctx, tag)
 }
 
 func (c *Xray) removeOutbound(tag string) error {
-	err := c.ohm.RemoveHandler(context.Background(), tag)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	err := c.ohm.RemoveHandler(ctx, tag)
 	return err
 }

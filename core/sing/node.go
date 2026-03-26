@@ -421,6 +421,14 @@ func (b *Sing) AddNode(tag string, info *panel.NodeInfo, config *conf.Options) e
 	return nil
 }
 
+func (b *Sing) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, config *conf.Options) {
+	reportMin := config.ReportMinTraffic
+	if info.NodeReportMinTraffic > 0 {
+		reportMin = int64(info.NodeReportMinTraffic)
+	}
+	b.nodeReportMinTrafficBytes[tag] = reportMin * 1024
+}
+
 func (b *Sing) DelNode(tag string) error {
 	// 清理 hookServer 中的流量计数器
 	b.hookServer.counter.Delete(tag)

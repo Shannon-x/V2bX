@@ -19,6 +19,7 @@ type Core interface {
 	AddUsers(p *AddUsersParams) (added int, err error)
 	GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic, error)
 	DelUsers(users []panel.UserInfo, tag string, info *panel.NodeInfo) error
+	UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, config *conf.Options)
 	Protocols() []string
 	Type() string
 }

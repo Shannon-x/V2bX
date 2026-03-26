@@ -141,6 +141,14 @@ func (s *Selector) DelUsers(users []panel.UserInfo, tag string, info *panel.Node
 	return t.(Core).DelUsers(users, tag, info)
 }
 
+func (s *Selector) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, config *conf.Options) {
+	t, e := s.nodes.Load(tag)
+	if !e {
+		return
+	}
+	t.(Core).UpdateNodeReportMinTraffic(tag, info, config)
+}
+
 func (s *Selector) Protocols() []string {
 	protocols := make([]string, 0)
 	for i := range s.cores {

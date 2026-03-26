@@ -1,6 +1,7 @@
 package hy2
 
 import (
+	"github.com/InazumaV/V2bX/api/panel"
 	"github.com/InazumaV/V2bX/conf"
 	vCore "github.com/InazumaV/V2bX/core"
 	"go.uber.org/zap"
@@ -58,4 +59,8 @@ func (h *Hysteria2) Close() error {
 
 func (h *Hysteria2) Type() string {
 	return "hysteria2"
+}
+
+func (h *Hysteria2) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, config *conf.Options) {
+	// no-op: hysteria2 core does not track per-node report thresholds
 }

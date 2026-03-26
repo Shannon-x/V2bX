@@ -3,6 +3,7 @@ package xray
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/InazumaV/V2bX/api/panel"
 	"github.com/InazumaV/V2bX/common/counter"
@@ -14,7 +15,9 @@ import (
 )
 
 func (c *Xray) GetUserManager(tag string) (proxy.UserManager, error) {
-	handler, err := c.ihm.GetHandler(context.Background(), tag)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	handler, err := c.ihm.GetHandler(ctx, tag)
 	if err != nil {
 		return nil, fmt.Errorf("no such inbound tag: %s", err)
 	}
@@ -39,7 +42,9 @@ func (c *Xray) DelUsers(users []panel.UserInfo, tag string, _ *panel.NodeInfo) e
 	defer c.users.mapLock.Unlock()
 	for i := range users {
 		user = format.UserTag(tag, users[i].Uuid)
-		err = userManager.RemoveUser(context.Background(), user)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err = userManager.RemoveUser(ctx, user)
+		cancel()
 		if err != nil {
 			return err
 		}
@@ -136,7 +141,9 @@ func (c *Xray) AddUsers(p *vCore.AddUsersParams) (added int, err error) {
 		if err != nil {
 			return 0, err
 		}
-		err = man.AddUser(context.Background(), mUser)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err = man.AddUser(ctx, mUser)
+		cancel()
 		if err != nil {
 			return 0, err
 		}

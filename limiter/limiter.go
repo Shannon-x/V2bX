@@ -206,24 +206,21 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 	} else {
 		return nil, true
 	}
-	if isTcp || noSSUDP {
+
+	// Device limit check — only for source-TCP connections (matching v2node)
+	if noSSUDP {
 		aliveIp := l.getAliveIp(uid)
 
 		l.onlineMu.Lock()
 		ipMap, exists := l.userOnlineIP[taguuid]
-		// Supplement panel AliveList with local real-time IP count
-		localIPs := len(ipMap)
-		effectiveCount := aliveIp
-		if localIPs > effectiveCount {
-			effectiveCount = localIPs
-		}
 		if !exists {
+			// First connection from this user
 			ipMap = make(map[string]int, 4)
 			ipMap[ip] = uid
 			l.userOnlineIP[taguuid] = ipMap
 			l.onlineMu.Unlock()
 
-			// Check old online record
+			// Check if this IP was in previous cycle (old online record)
 			l.oldOnlineMu.RLock()
 			oldUid, oldExists := l.oldUserOnline[ip]
 			l.oldOnlineMu.RUnlock()
@@ -231,8 +228,8 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 				l.oldOnlineMu.Lock()
 				delete(l.oldUserOnline, ip)
 				l.oldOnlineMu.Unlock()
-			} else if deviceLimit > 0 && deviceLimit <= effectiveCount {
-				// Rollback: remove the entry we just added
+			} else if deviceLimit > 0 && deviceLimit <= aliveIp {
+				// Over device limit — rollback
 				l.onlineMu.Lock()
 				delete(l.userOnlineIP, taguuid)
 				l.onlineMu.Unlock()
@@ -250,7 +247,7 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 					l.oldOnlineMu.Lock()
 					delete(l.oldUserOnline, ip)
 					l.oldOnlineMu.Unlock()
-				} else if deviceLimit > 0 && deviceLimit <= effectiveCount {
+				} else if deviceLimit > 0 && deviceLimit <= aliveIp {
 					l.onlineMu.Unlock()
 					return nil, true
 				} else {
@@ -277,6 +274,7 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 	}
 	return nil, false
 }
+
 
 func (l *Limiter) GetOnlineDevice() ([]panel.OnlineUser, error) {
 	var onlineUser []panel.OnlineUser

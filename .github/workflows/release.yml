@@ -177,6 +177,7 @@ jobs:
           path: |
             ./V2bX-${{ steps.get_filename.outputs.ASSET_NAME }}/*
       - name: Upload binaries to release
+        if: github.event_name != 'pull_request'
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
@@ -185,6 +186,7 @@ jobs:
           release_name: ${{ needs.prepare.outputs.release_name }}
           overwrite: true
           file_glob: true
+          make_latest: true
 
   finalize:
     needs: [prepare, build]

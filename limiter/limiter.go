@@ -209,6 +209,8 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 
 	// Device limit check — only for source-TCP connections (matching v2node)
 	if noSSUDP {
+		aliveIp := l.getAliveIp(uid)
+
 		l.onlineMu.Lock()
 		ipMap, exists := l.userOnlineIP[taguuid]
 		if !exists {
@@ -223,38 +225,29 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 			oldUid, oldExists := l.oldUserOnline[ip]
 			l.oldOnlineMu.RUnlock()
 			if oldExists && oldUid == uid {
-				// Returning connection from previous cycle — always allow
 				l.oldOnlineMu.Lock()
 				delete(l.oldUserOnline, ip)
 				l.oldOnlineMu.Unlock()
-			} else if deviceLimit > 0 {
-				// Use local IP count (1, since we just created the map)
-				// plus cross-check with panel alive count
-				aliveIp := l.getAliveIp(uid)
-				if aliveIp > 1 && deviceLimit <= aliveIp {
-					// Over device limit — rollback
-					l.onlineMu.Lock()
-					delete(l.userOnlineIP, taguuid)
-					l.onlineMu.Unlock()
-					return nil, true
-				}
+			} else if deviceLimit > 0 && deviceLimit <= aliveIp {
+				// Over device limit — rollback
+				l.onlineMu.Lock()
+				delete(l.userOnlineIP, taguuid)
+				l.onlineMu.Unlock()
+				return nil, true
 			}
 		} else {
 			if _, ipExists := ipMap[ip]; !ipExists {
-				// New IP for existing user — use LOCAL IP count for device limit
-				localCount := len(ipMap) + 1 // +1 for the new IP about to be added
+				// New IP for existing user
 				l.oldOnlineMu.RLock()
 				oldUid, oldExists := l.oldUserOnline[ip]
 				l.oldOnlineMu.RUnlock()
 				if oldExists && oldUid == uid {
-					// Returning IP from previous cycle — always allow
 					ipMap[ip] = uid
 					l.onlineMu.Unlock()
 					l.oldOnlineMu.Lock()
 					delete(l.oldUserOnline, ip)
 					l.oldOnlineMu.Unlock()
-				} else if deviceLimit > 0 && deviceLimit < localCount {
-					// Over device limit based on LOCAL count (accurate, not stale)
+				} else if deviceLimit > 0 && deviceLimit <= aliveIp {
 					l.onlineMu.Unlock()
 					return nil, true
 				} else {

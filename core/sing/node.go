@@ -432,13 +432,13 @@ func (b *Sing) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, conf
 func (b *Sing) DelNode(tag string) error {
 	// 清理 hookServer 中的流量计数器
 	b.hookServer.counter.Delete(tag)
-	
+
 	// 清理 nodeReportMinTrafficBytes
 	delete(b.nodeReportMinTrafficBytes, tag)
-	
+
 	// 清理缓存的 inbound options
 	delete(b.inboundOptions, tag)
-	
+
 	in := b.box.Inbound()
 	err := in.Remove(tag)
 	if err != nil {

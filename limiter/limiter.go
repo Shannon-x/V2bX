@@ -24,11 +24,11 @@ func Init() {
 type Limiter struct {
 	DomainRules     []*regexp.Regexp
 	ProtocolRules   []string
-	IPRules         []*net.IPNet         // block_ip: CIDR networks to block
-	PortRules       []PortRange          // block_port: port ranges to block
-	RouteRules      []panel.RouteRule    // route/route_ip/direct/proxy rules (compiled)
-	RouteDomainRe   []*regexp.Regexp     // compiled domain regexps for RouteRules
-	DefaultOutbound string               // default_out: custom default outbound tag
+	IPRules         []*net.IPNet      // block_ip: CIDR networks to block
+	PortRules       []PortRange       // block_port: port ranges to block
+	RouteRules      []panel.RouteRule // route/route_ip/direct/proxy rules (compiled)
+	RouteDomainRe   []*regexp.Regexp  // compiled domain regexps for RouteRules
+	DefaultOutbound string            // default_out: custom default outbound tag
 	SpeedLimit      int
 
 	// User online IP tracking: RWMutex + map replaces nested sync.Map
@@ -38,9 +38,9 @@ type Limiter struct {
 	oldOnlineMu   sync.RWMutex
 	oldUserOnline map[string]int // key: IP, value: UID
 
-	UUIDtoUID     sync.Map       // Key: UUID, value: Uid (lock-free, read-heavy)
-	UserLimitInfo *sync.Map      // Key: TagUUID value: UserLimitInfo
-	SpeedLimiter  *sync.Map      // key: TagUUID, value: *rate.DynamicBucket
+	UUIDtoUID     sync.Map  // Key: UUID, value: Uid (lock-free, read-heavy)
+	UserLimitInfo *sync.Map // Key: TagUUID value: UserLimitInfo
+	SpeedLimiter  *sync.Map // key: TagUUID, value: *rate.DynamicBucket
 	AliveList     atomic.Pointer[map[int]int]
 }
 
@@ -298,7 +298,6 @@ func (l *Limiter) GetOnlineDevice() ([]panel.OnlineUser, error) {
 
 	return onlineUser, nil
 }
-
 
 type UserIpList struct {
 	Uid    int      `json:"Uid"`

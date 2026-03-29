@@ -40,8 +40,8 @@ func (h *Hysteria2) AddNode(tag string, info *panel.NodeInfo, config *conf.Optio
 			logger: h.Logger,
 		},
 		TrafficLogger: &HookServer{
-			Tag:                   tag,
-			logger:                h.Logger,
+			Tag:    tag,
+			logger: h.Logger,
 			ReportMinTrafficBytes: func() int64 {
 				if info.NodeReportMinTraffic > 0 {
 					return int64(info.NodeReportMinTraffic) * 1024
@@ -79,7 +79,7 @@ func (h *Hysteria2) DelNode(tag string) error {
 			hook.Counter.Delete(tag)
 		}
 	}
-	
+
 	err := h.Hy2nodes[tag].Hy2server.Close()
 	if err != nil {
 		return err

@@ -64,3 +64,8 @@ func (h *Hysteria2) Type() string {
 func (h *Hysteria2) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, config *conf.Options) {
 	// no-op: hysteria2 core does not track per-node report thresholds
 }
+
+func (h *Hysteria2) AddNodeCustomOutbounds(info *panel.NodeInfo) error {
+	// Not supported for hysteria2 currently, quietly ignore.
+	return nil
+}

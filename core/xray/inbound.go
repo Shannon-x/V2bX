@@ -69,31 +69,66 @@ func buildInbound(option *conf.Options, nodeInfo *panel.NodeInfo, tag string) (*
 		t := coreConf.TransportProtocol(network)
 		in.StreamSetting = &coreConf.StreamConfig{Network: &t}
 	}
+
+	// Determine ProxyProtocol: from panel NetworkSettings (v2node compat) OR local config
+	enableProxyProtocol := option.XrayOptions.EnableProxyProtocol
+	if !enableProxyProtocol {
+		// Check panel's NetworkSettings for acceptProxyProtocol (as v2node does)
+		var networkSettings json.RawMessage
+		switch nodeInfo.Type {
+		case "vmess", "vless":
+			if nodeInfo.VAllss != nil {
+				networkSettings = nodeInfo.VAllss.NetworkSettings
+			}
+		case "trojan":
+			if nodeInfo.Trojan != nil {
+				networkSettings = nodeInfo.Trojan.NetworkSettings
+			}
+		}
+		if len(networkSettings) > 0 {
+			var ppConfig struct {
+				AcceptProxyProtocol bool `json:"acceptProxyProtocol"`
+			}
+			if json.Unmarshal(networkSettings, &ppConfig) == nil && ppConfig.AcceptProxyProtocol {
+				enableProxyProtocol = true
+			}
+		}
+	}
+
 	switch network {
 	case "tcp":
 		if in.StreamSetting.TCPSettings != nil {
-			in.StreamSetting.TCPSettings.AcceptProxyProtocol = option.XrayOptions.EnableProxyProtocol
+			in.StreamSetting.TCPSettings.AcceptProxyProtocol = enableProxyProtocol
 		} else {
 			tcpSetting := &coreConf.TCPConfig{
-				AcceptProxyProtocol: option.XrayOptions.EnableProxyProtocol,
-			} //Enable proxy protocol
+				AcceptProxyProtocol: enableProxyProtocol,
+			}
 			in.StreamSetting.TCPSettings = tcpSetting
 		}
 	case "ws":
 		if in.StreamSetting.WSSettings != nil {
-			in.StreamSetting.WSSettings.AcceptProxyProtocol = option.XrayOptions.EnableProxyProtocol
+			in.StreamSetting.WSSettings.AcceptProxyProtocol = enableProxyProtocol
 		} else {
 			in.StreamSetting.WSSettings = &coreConf.WebSocketConfig{
-				AcceptProxyProtocol: option.XrayOptions.EnableProxyProtocol,
-			} //Enable proxy protocol
+				AcceptProxyProtocol: enableProxyProtocol,
+			}
 		}
 	default:
 		socketConfig := &coreConf.SocketConfig{
-			AcceptProxyProtocol: option.XrayOptions.EnableProxyProtocol,
+			AcceptProxyProtocol: enableProxyProtocol,
 			TFO:                 option.XrayOptions.EnableTFO,
-		} //Enable proxy protocol
+		}
 		in.StreamSetting.SocketSettings = socketConfig
 	}
+
+	// Also set SocketSettings for universal ProxyProtocol support (v2node compat)
+	if enableProxyProtocol {
+		if in.StreamSetting.SocketSettings == nil {
+			in.StreamSetting.SocketSettings = &coreConf.SocketConfig{}
+		}
+		in.StreamSetting.SocketSettings.AcceptProxyProtocol = true
+	}
+
 	// Set TLS or Reality settings
 	switch nodeInfo.Security {
 	case panel.Tls:

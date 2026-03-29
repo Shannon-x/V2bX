@@ -660,6 +660,17 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 	}
 
 	if handler == nil {
+		if l != nil && l.DefaultOutbound != "" {
+			if h := d.ohm.GetHandler(l.DefaultOutbound); h != nil {
+				errors.LogInfo(ctx, "taking custom default_out detour [", l.DefaultOutbound, "] for [", destination, "]")
+				handler = h
+			} else {
+				errors.LogWarning(ctx, "custom default_out tag non existing: ", l.DefaultOutbound)
+			}
+		}
+	}
+
+	if handler == nil {
 		handler = d.ohm.GetDefaultHandler()
 	}
 

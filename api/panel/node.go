@@ -151,12 +151,13 @@ type RawDNS struct {
 }
 
 type Rules struct {
-	Regexp     []string
-	Protocol   []string
-	InboundIP  []string    // block_ip: IP/CIDR patterns to block
-	InboundPort []string   // block_port: port/port-range to block
-	RouteRules []RouteRule // route/route_ip/direct/proxy rules
-	DefaultOut string      // default_out: custom default outbound tag
+	Regexp      []string
+	Protocol    []string
+	InboundIP   []string    // block_ip: IP/CIDR patterns to block
+	InboundPort []string    // block_port: port/port-range to block
+	RouteRules  []RouteRule // route/route_ip/direct/proxy rules
+	DefaultOut  string      // default_out: custom default outbound tag
+	RawDefaultOut string    // default_out: full JSON if default outbound originates from custom JSON
 }
 
 // RouteRule represents a dynamic routing rule from the panel
@@ -164,6 +165,7 @@ type RouteRule struct {
 	Type        string   // "domain" or "ip"
 	Match       []string // match patterns
 	OutboundTag string   // target outbound tag
+	RawOutbound string   // if OutboundTag originates from custom JSON, full JSON is kept here
 }
 
 // V2UnifiedNode is the flat config format from V2 API (/api/v2/server/config).
@@ -429,16 +431,49 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 			node.Rules.InboundPort = append(node.Rules.InboundPort, matchs...)
 		case "protocol":
 			node.Rules.Protocol = append(node.Rules.Protocol, matchs...)
-		case "route":
+		case "route", "route_ip":
+			outboundTag := cm.Routes[i].ActionValue
+			var rawOutbound string
+
+			// If it starts with { it could be a JSON outbound object (as used by v2node/v2board)
+			if strings.HasPrefix(strings.TrimSpace(outboundTag), "{") {
+				var partial map[string]interface{}
+				if err := json.Unmarshal([]byte(outboundTag), &partial); err == nil {
+					if tag, ok := partial["tag"].(string); ok && tag != "" {
+						rawOutbound = outboundTag
+						outboundTag = tag
+					}
+				}
+			}
+
+			ruleType := "domain"
+			if cm.Routes[i].Action == "route_ip" {
+				ruleType = "ip"
+			}
+			
 			node.Rules.RouteRules = append(node.Rules.RouteRules, RouteRule{
-				Type: "domain", Match: matchs, OutboundTag: cm.Routes[i].ActionValue,
-			})
-		case "route_ip":
-			node.Rules.RouteRules = append(node.Rules.RouteRules, RouteRule{
-				Type: "ip", Match: matchs, OutboundTag: cm.Routes[i].ActionValue,
+				Type:        ruleType,
+				Match:       matchs,
+				OutboundTag: outboundTag,
+				RawOutbound: rawOutbound,
 			})
 		case "default_out":
-			node.Rules.DefaultOut = cm.Routes[i].ActionValue
+			outboundTag := cm.Routes[i].ActionValue
+			var rawOutbound string
+
+			// If it starts with { it could be a JSON outbound object
+			if strings.HasPrefix(strings.TrimSpace(outboundTag), "{") {
+				var partial map[string]interface{}
+				if err := json.Unmarshal([]byte(outboundTag), &partial); err == nil {
+					if tag, ok := partial["tag"].(string); ok && tag != "" {
+						rawOutbound = outboundTag
+						outboundTag = tag
+					}
+				}
+			}
+
+			node.Rules.DefaultOut = outboundTag
+			node.Rules.RawDefaultOut = rawOutbound
 		case "direct":
 			node.Rules.RouteRules = append(node.Rules.RouteRules, RouteRule{
 				Type: "domain", Match: matchs, OutboundTag: "direct",

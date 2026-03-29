@@ -9,6 +9,7 @@ import (
 	"github.com/sagernet/sing-box/include"
 	"github.com/sagernet/sing-box/log"
 
+	"github.com/InazumaV/V2bX/api/panel"
 	"github.com/InazumaV/V2bX/conf"
 	vCore "github.com/InazumaV/V2bX/core"
 	box "github.com/sagernet/sing-box"
@@ -122,6 +123,11 @@ func (b *Sing) Protocols() []string {
 
 func (b *Sing) Type() string {
 	return "sing"
+}
+
+func (b *Sing) AddNodeCustomOutbounds(info *panel.NodeInfo) error {
+	// Not supported for sing-box currently, quietly ignore.
+	return nil
 }
 
 // rebuildInbound removes and re-creates an inbound with updated options.

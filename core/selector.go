@@ -149,6 +149,19 @@ func (s *Selector) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, 
 	t.(Core).UpdateNodeReportMinTraffic(tag, info, config)
 }
 
+func (s *Selector) AddNodeCustomOutbounds(info *panel.NodeInfo) error {
+	var errs []error
+	for _, core := range s.cores {
+		if err := core.AddNodeCustomOutbounds(info); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
 func (s *Selector) Protocols() []string {
 	protocols := make([]string, 0)
 	for i := range s.cores {

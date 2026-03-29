@@ -2,6 +2,7 @@ package xray
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -9,9 +10,11 @@ import (
 	"github.com/InazumaV/V2bX/api/panel"
 	"github.com/InazumaV/V2bX/conf"
 	"github.com/InazumaV/V2bX/core/xray/app/dispatcher"
+	log "github.com/sirupsen/logrus"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/inbound"
 	"github.com/xtls/xray-core/features/outbound"
+	coreConf "github.com/xtls/xray-core/infra/conf"
 )
 
 type DNSConfig struct {
@@ -57,6 +60,55 @@ func (c *Xray) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, conf
 	c.nodeReportMinTrafficBytes[tag] = reportMin * 1024
 }
 
+func (c *Xray) AddNodeCustomOutbounds(info *panel.NodeInfo) error {
+	for _, route := range info.Rules.RouteRules {
+		if route.RawOutbound != "" {
+			// This is a custom JSON outbound. Try to parse it.
+			outbound := &coreConf.OutboundDetourConfig{}
+			err := json.Unmarshal([]byte(route.RawOutbound), outbound)
+			if err != nil {
+				log.Errorf("Failed to unmarshal custom outbound JSON for tag %s: %v", route.OutboundTag, err)
+				continue
+			}
+
+			// Build the Xray OutboundHandlerConfig
+			customConfig, err := outbound.Build()
+			if err != nil {
+				log.Errorf("Failed to build custom outbound for tag %s: %v", route.OutboundTag, err)
+				continue
+			}
+
+			// Remove existing handler gracefully (for hot-reloading modified outbounds)
+			_ = c.removeOutbound(customConfig.Tag)
+
+			err = c.addOutbound(customConfig)
+			if err != nil {
+				log.Errorf("Failed to inject custom outbound %s into Xray: %v", customConfig.Tag, err)
+			} else {
+				log.Infof("Successfully injected custom JSON outbound: [%s]", customConfig.Tag)
+			}
+		}
+	}
+
+	if info.Rules.RawDefaultOut != "" {
+		outbound := &coreConf.OutboundDetourConfig{}
+		err := json.Unmarshal([]byte(info.Rules.RawDefaultOut), outbound)
+		if err == nil {
+			if customConfig, err := outbound.Build(); err == nil {
+				_ = c.removeOutbound(customConfig.Tag)
+				if err = c.addOutbound(customConfig); err != nil {
+					log.Errorf("Failed to inject default_out %s into Xray: %v", customConfig.Tag, err)
+				} else {
+					log.Infof("Successfully injected custom default JSON outbound: [%s]", customConfig.Tag)
+				}
+			}
+		} else {
+			log.Errorf("Failed to unmarshal default_out custom JSON: %v", err)
+		}
+	}
+	return nil
+}
+
 func (c *Xray) addInbound(config *core.InboundHandlerConfig) error {
 	rawHandler, err := core.CreateObject(c.Server, config)
 	if err != nil {
@@ -94,10 +146,10 @@ func (c *Xray) addOutbound(config *core.OutboundHandlerConfig) error {
 func (c *Xray) DelNode(tag string) error {
 	// 清理 dispatcher 中的流量计数器
 	c.dispatcher.Counter.Delete(tag)
-	
+
 	// 清理 nodeReportMinTrafficBytes
 	delete(c.nodeReportMinTrafficBytes, tag)
-	
+
 	// 清理该节点所有用户的 LinkManagers
 	// LinkManagers 的 key 格式是 format.UserTag(tag, uuid) = "tag|uuid"
 	prefix := tag + "|"
@@ -109,7 +161,7 @@ func (c *Xray) DelNode(tag string) error {
 		}
 		return true
 	})
-	
+
 	err := c.removeInbound(tag)
 	if err != nil {
 		return fmt.Errorf("remove in error: %s", err)

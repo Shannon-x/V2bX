@@ -74,7 +74,7 @@ func Put(b *[]byte) {
 		xLargePool.Put(b)
 	case XXLarge:
 		xxLargePool.Put(b)
-	// Non-standard sizes are not returned to pool
+		// Non-standard sizes are not returned to pool
 	}
 }
 

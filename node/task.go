@@ -107,6 +107,14 @@ func (c *Controller) nodeInfoMonitor() (err error) {
 			}).Error("Update Rule failed")
 		}
 
+		// Update custom outbounds dynamically
+		if err = c.server.AddNodeCustomOutbounds(newN); err != nil {
+			log.WithFields(log.Fields{
+				"tag": c.tag,
+				"err": err,
+			}).Error("Add custom outbounds failed")
+		}
+
 		// Update nodeReportMinTraffic in core
 		c.server.UpdateNodeReportMinTraffic(c.tag, c.info, c.Options)
 

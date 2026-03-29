@@ -10,6 +10,7 @@ import (
 	vCore "github.com/InazumaV/V2bX/core"
 	"github.com/InazumaV/V2bX/limiter"
 	log "github.com/sirupsen/logrus"
+	"sync"
 )
 
 type Controller struct {
@@ -27,13 +28,16 @@ type Controller struct {
 	dynamicSpeedLimitPeriodic *task.Task
 	onlineIpReportPeriodic    *task.Task
 	*conf.Options
+	apiConfig *conf.ApiConfig
+	apiMutex  sync.RWMutex
 }
 
 // NewController return a Node controller with default parameters.
-func NewController(server vCore.Core, api *panel.Client, config *conf.Options) *Controller {
+func NewController(server vCore.Core, api *panel.Client, nodeConf *conf.NodeConfig) *Controller {
 	controller := &Controller{
 		server:    server,
-		Options:   config,
+		Options:   &nodeConf.Options,
+		apiConfig: &nodeConf.ApiConfig,
 		apiClient: api,
 	}
 	return controller
@@ -43,19 +47,19 @@ func NewController(server vCore.Core, api *panel.Client, config *conf.Options) *
 func (c *Controller) Start() error {
 	// First fetch Node Info
 	var err error
-	node, err := c.apiClient.GetNodeInfo()
+	node, err := c.getAPIClient().GetNodeInfo()
 	if err != nil {
 		return fmt.Errorf("get node info error: %s", err)
 	}
 	// Update user
-	c.userList, err = c.apiClient.GetUserList()
+	c.userList, err = c.getAPIClient().GetUserList()
 	if err != nil {
 		return fmt.Errorf("get user list error: %s", err)
 	}
 	if len(c.userList) == 0 {
 		return errors.New("add users error: not have any user")
 	}
-	c.aliveMap, err = c.apiClient.GetUserAlive()
+	c.aliveMap, err = c.getAPIClient().GetUserAlive()
 	if err != nil {
 		return fmt.Errorf("failed to get user alive list: %s", err)
 	}
@@ -123,5 +127,30 @@ func (c *Controller) Close() error {
 }
 
 func (c *Controller) buildNodeTag(node *panel.NodeInfo) string {
-	return fmt.Sprintf("[%s]-%s:%d", c.apiClient.APIHost, node.Type, node.Id)
+	return fmt.Sprintf("[%s]-%s:%d", c.getAPIClient().APIHost, node.Type, node.Id)
+}
+
+func (c *Controller) getAPIClient() *panel.Client {
+	c.apiMutex.RLock()
+	defer c.apiMutex.RUnlock()
+	return c.apiClient
+}
+
+func (c *Controller) reloadAPIClient() {
+	c.apiMutex.Lock()
+	defer c.apiMutex.Unlock()
+
+	log.Warnf("[%s] Rebuilding API client to recover from task timeout...", c.tag)
+
+	newClient, err := panel.New(c.apiConfig)
+	if err != nil {
+		log.Errorf("[%s] Failed to rebuild API client: %v", c.tag, err)
+		return
+	}
+
+	if c.apiClient != nil {
+		c.apiClient.Close()
+	}
+	c.apiClient = newClient
+	log.Infof("[%s] API client recursively rebuilt successfully", c.tag)
 }

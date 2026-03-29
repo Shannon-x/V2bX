@@ -8,7 +8,7 @@ import (
 func (c *Controller) reportUserTrafficTask() (err error) {
 	userTraffic, _ := c.server.GetUserTrafficSlice(c.tag, true)
 	if len(userTraffic) > 0 {
-		err = c.apiClient.ReportUserTraffic(userTraffic)
+		err = c.getAPIClient().ReportUserTraffic(userTraffic)
 		if err != nil {
 			log.WithFields(log.Fields{
 				"tag": c.tag,
@@ -44,7 +44,7 @@ func (c *Controller) reportUserTrafficTask() (err error) {
 		for _, onlineuser := range result {
 			data[onlineuser.UID] = append(data[onlineuser.UID], onlineuser.IP)
 		}
-		if err = c.apiClient.ReportNodeOnlineUsers(&data); err != nil {
+		if err = c.getAPIClient().ReportNodeOnlineUsers(&data); err != nil {
 			log.WithFields(log.Fields{
 				"tag": c.tag,
 				"err": err,

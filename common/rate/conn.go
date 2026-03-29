@@ -8,29 +8,28 @@ import (
 	"github.com/juju/ratelimit"
 )
 
-const rateLimitSleepInterval = 10 * time.Millisecond
-
 // DynamicBucket supports atomic hot-swap of rate limit bucket.
 // All connections sharing the same DynamicBucket will see updated rates
-// immediately after Update() is called.
+// after Update() is called — new I/O operations pick up the latest bucket
+// via Get(), matching v2node's approach.
 type DynamicBucket struct {
-	bucket atomic.Pointer[ratelimit.Bucket]
+	v atomic.Value // *ratelimit.Bucket
 }
 
-func NewDynamicBucket(limit int64) *DynamicBucket {
-	db := &DynamicBucket{}
-	b := ratelimit.NewBucketWithQuantum(time.Second, limit, limit)
-	db.bucket.Store(b)
-	return db
+func NewDynamicBucket(rate int64) *DynamicBucket {
+	b := ratelimit.NewBucketWithQuantum(time.Second, rate, rate)
+	d := &DynamicBucket{}
+	d.v.Store(b)
+	return d
 }
 
-func (db *DynamicBucket) Get() *ratelimit.Bucket {
-	return db.bucket.Load()
+func (d *DynamicBucket) Get() *ratelimit.Bucket {
+	return d.v.Load().(*ratelimit.Bucket)
 }
 
-func (db *DynamicBucket) Update(limit int64) {
-	b := ratelimit.NewBucketWithQuantum(time.Second, limit, limit)
-	db.bucket.Store(b)
+func (d *DynamicBucket) Update(rate int64) {
+	newB := ratelimit.NewBucketWithQuantum(time.Second, rate, rate)
+	d.v.Store(newB)
 }
 
 func NewConnRateLimiter(c net.Conn, l *DynamicBucket) *Conn {
@@ -46,34 +45,11 @@ type Conn struct {
 }
 
 func (c *Conn) Read(b []byte) (n int, err error) {
-	n, err = c.Conn.Read(b)
-	if n > 0 {
-		waitForTokens(c.limiter, int64(n))
-	}
-	return n, err
+	c.limiter.Get().Wait(int64(len(b)))
+	return c.Conn.Read(b)
 }
 
 func (c *Conn) Write(b []byte) (n int, err error) {
-	n, err = c.Conn.Write(b)
-	if n > 0 {
-		waitForTokens(c.limiter, int64(n))
-	}
-	return n, err
-}
-
-// waitForTokens consumes tokens from the DynamicBucket in a non-blocking loop.
-// It fetches the current bucket on each iteration, so rate changes via
-// DynamicBucket.Update() take effect immediately for existing connections.
-func waitForTokens(db *DynamicBucket, n int64) {
-	for n > 0 {
-		b := db.Get()
-		if b == nil {
-			return
-		}
-		taken := b.TakeAvailable(n)
-		n -= taken
-		if n > 0 {
-			time.Sleep(rateLimitSleepInterval)
-		}
-	}
+	c.limiter.Get().Wait(int64(len(b)))
+	return c.Conn.Write(b)
 }

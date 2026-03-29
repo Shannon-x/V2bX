@@ -22,9 +22,9 @@ func (w *Writer) Close() error {
 }
 
 func (w *Writer) WriteMultiBuffer(mb buf.MultiBuffer) error {
-	n := int64(mb.Len())
-	if n > 0 {
-		waitForTokens(w.limiter, n)
+	limiter := w.limiter.Get()
+	if limiter != nil {
+		limiter.Wait(int64(mb.Len()))
 	}
 	return w.writer.WriteMultiBuffer(mb)
 }

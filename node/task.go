@@ -12,13 +12,17 @@ import (
 func (c *Controller) startTasks(node *panel.NodeInfo) {
 	// fetch node info task
 	c.nodeInfoMonitorPeriodic = &task.Task{
+		Name:     "nodeInfoMonitor",
 		Interval: node.PullInterval,
 		Execute:  c.nodeInfoMonitor,
+		Reload:   c.reloadAPIClient,
 	}
 	// fetch user list task
 	c.userReportPeriodic = &task.Task{
+		Name:     "reportUserTrafficTask",
 		Interval: node.PushInterval,
 		Execute:  c.reportUserTrafficTask,
+		Reload:   c.reloadAPIClient,
 	}
 	log.WithField("tag", c.tag).Info("Start monitor node status")
 	// delay to start nodeInfoMonitor
@@ -30,8 +34,10 @@ func (c *Controller) startTasks(node *panel.NodeInfo) {
 		case "none", "", "file", "self":
 		default:
 			c.renewCertPeriodic = &task.Task{
+				Name:     "renewCertTask",
 				Interval: time.Hour * 24,
 				Execute:  c.renewCertTask,
+				Reload:   c.reloadAPIClient,
 			}
 			log.WithField("tag", c.tag).Info("Start renew cert")
 			// delay to start renewCert
@@ -41,16 +47,18 @@ func (c *Controller) startTasks(node *panel.NodeInfo) {
 	if c.LimitConfig.EnableDynamicSpeedLimit {
 		c.traffic = make(map[string]int64)
 		c.dynamicSpeedLimitPeriodic = &task.Task{
+			Name:     "dynamicSpeedLimitTask",
 			Interval: time.Duration(c.LimitConfig.DynamicSpeedLimitConfig.Periodic) * time.Second,
 			Execute:  c.SpeedChecker,
 		}
-		log.Printf("[%s: %d] Start dynamic speed limit", c.apiClient.NodeType, c.apiClient.NodeId)
+		log.Printf("[%s: %d] Start dynamic speed limit", c.getAPIClient().NodeType, c.getAPIClient().NodeId)
 	}
 }
 
 func (c *Controller) nodeInfoMonitor() (err error) {
+	api := c.getAPIClient()
 	// get node info
-	newN, err := c.apiClient.GetNodeInfo()
+	newN, err := api.GetNodeInfo()
 	if err != nil {
 		log.WithFields(log.Fields{
 			"tag": c.tag,
@@ -60,7 +68,7 @@ func (c *Controller) nodeInfoMonitor() (err error) {
 	}
 
 	// get user info
-	newU, err := c.apiClient.GetUserList()
+	newU, err := api.GetUserList()
 	if err != nil {
 		log.WithFields(log.Fields{
 			"tag": c.tag,
@@ -70,7 +78,7 @@ func (c *Controller) nodeInfoMonitor() (err error) {
 	}
 
 	// get user alive
-	newA, err := c.apiClient.GetUserAlive()
+	newA, err := api.GetUserAlive()
 	if err != nil {
 		log.WithFields(log.Fields{
 			"tag": c.tag,

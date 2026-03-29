@@ -99,3 +99,9 @@ func New(c *conf.ApiConfig) (*Client, error) {
 		AliveMap:   &AliveMap{},
 	}, nil
 }
+
+func (c *Client) Close() {
+	if t, ok := c.client.GetClient().Transport.(*http.Transport); ok {
+		t.CloseIdleConnections()
+	}
+}

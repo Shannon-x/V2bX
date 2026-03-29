@@ -25,7 +25,7 @@ func (n *Node) Start(nodes []conf.NodeConfig, core vCore.Core) error {
 			return err
 		}
 		// Register controller service
-		n.controllers[i] = NewController(core, p, &nodes[i].Options)
+		n.controllers[i] = NewController(core, p, &nodes[i])
 		err = n.controllers[i].Start()
 		if err != nil {
 			return fmt.Errorf("start node controller [%s-%s-%d] error: %s",

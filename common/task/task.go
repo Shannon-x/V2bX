@@ -9,11 +9,14 @@ import (
 )
 
 type Task struct {
+	Name     string
 	Interval time.Duration
 	Execute  func() error
+	Reload   func()
 	access   sync.Mutex
-	running  bool
-	stop     chan struct{}
+
+	running bool
+	stop    chan struct{}
 }
 
 func (t *Task) Start(first bool) error {
@@ -88,7 +91,10 @@ func (t *Task) executeWithTimeout() error {
 
 	select {
 	case <-ctx.Done():
-		log.Error("Task execution timed out, skipping this cycle")
+		log.Errorf("Task %s execution timed out, skipping this cycle and triggering reload", t.Name)
+		if t.Reload != nil {
+			go t.Reload()
+		}
 		return nil // don't return error — just skip this cycle
 	case err := <-done:
 		return err

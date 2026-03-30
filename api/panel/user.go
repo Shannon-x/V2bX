@@ -5,7 +5,6 @@ import (
 	"io"
 	"strings"
 
-	"encoding/json"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 

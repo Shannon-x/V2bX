@@ -4,7 +4,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
+	"github.com/InazumaV/V2bX/common/counter"
 )
 
 var _ buf.TimeoutReader = (*CounterReader)(nil)
@@ -34,4 +36,32 @@ func (c *CounterReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 		c.Counter.Add(int64(mb.Len()))
 	}
 	return mb, nil
+}
+
+func (c *CounterReader) Close() error {
+	return common.Close(c.Reader)
+}
+
+func (c *CounterReader) Interrupt() {
+	common.Interrupt(c.Reader)
+}
+
+type SizeStatWriter struct {
+	Counter *counter.XrayTrafficCounter
+	Writer  buf.Writer
+}
+
+func (w *SizeStatWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+	if mb != nil && mb.Len() > 0 {
+		w.Counter.V.Add(int64(mb.Len()))
+	}
+	return w.Writer.WriteMultiBuffer(mb)
+}
+
+func (w *SizeStatWriter) Close() error {
+	return common.Close(w.Writer)
+}
+
+func (w *SizeStatWriter) Interrupt() {
+	common.Interrupt(w.Writer)
 }

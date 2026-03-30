@@ -2,8 +2,10 @@ package panel
 
 import (
 	"fmt"
+	"io"
 	"strings"
 
+	"encoding/json"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 
@@ -42,7 +44,10 @@ func (c *Client) GetUserList() ([]UserInfo, error) {
 	if r == nil || r.RawResponse == nil {
 		return nil, fmt.Errorf("received nil response or raw response")
 	}
-	defer r.RawResponse.Body.Close()
+	defer func() {
+		io.Copy(io.Discard, r.RawResponse.Body)
+		r.RawResponse.Body.Close()
+	}()
 
 	if r.StatusCode() == 304 {
 		return nil, nil

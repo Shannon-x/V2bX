@@ -14,7 +14,6 @@ import (
 	"github.com/InazumaV/V2bX/common/rate"
 	"github.com/InazumaV/V2bX/limiter"
 
-	"github.com/xtls/xray-core/app/dispatcher"
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/errors"
@@ -238,11 +237,11 @@ func (d *DefaultDispatcher) getLink(ctx context.Context, network net.Network) (*
 		ts := t.GetCounter(user.Email)
 		upcounter := &counter.XrayTrafficCounter{V: &ts.UpCounter}
 		downcounter := &counter.XrayTrafficCounter{V: &ts.DownCounter}
-		inboundLink.Writer = &dispatcher.SizeStatWriter{
+		inboundLink.Writer = &SizeStatWriter{
 			Counter: upcounter,
 			Writer:  inboundLink.Writer,
 		}
-		outboundLink.Writer = &dispatcher.SizeStatWriter{
+		outboundLink.Writer = &SizeStatWriter{
 			Counter: downcounter,
 			Writer:  outboundLink.Writer,
 		}
@@ -438,7 +437,7 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 			Counter: &ts.UpCounter,
 		}
 		lm.AddLink(managedWriter, outbound.Reader)
-		outbound.Writer = &dispatcher.SizeStatWriter{
+		outbound.Writer = &SizeStatWriter{
 			Counter: downcounter,
 			Writer:  outbound.Writer,
 		}

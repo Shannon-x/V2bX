@@ -22,6 +22,7 @@ func Init() {
 }
 
 type Limiter struct {
+	RuleMu          sync.RWMutex      // Protects rule slices from data race on hot-reloads
 	DomainRules     []*regexp.Regexp
 	ProtocolRules   []string
 	IPRules         []*net.IPNet      // block_ip: CIDR networks to block
@@ -31,12 +32,11 @@ type Limiter struct {
 	DefaultOutbound string            // default_out: custom default outbound tag
 	SpeedLimit      int
 
-	// User online IP tracking: RWMutex + map replaces nested sync.Map
-	// for better performance under high write concurrency.
-	onlineMu      sync.RWMutex
-	userOnlineIP  map[string]map[string]int // key: TagUUID, value: {IP -> UID}
-	oldOnlineMu   sync.RWMutex
-	oldUserOnline map[string]int // key: IP, value: UID
+	// User online IP tracking: sync.Map for high concurrency lock-free scale
+	UserOnlineIP  *sync.Map         // Key: TagUUID, value: *sync.Map {Key: Ip, value: Uid}
+	
+	oldOnlineMu   sync.RWMutex      // specialized tiny lock just to swap OldUserOnline smoothly
+	OldUserOnline *sync.Map         // Key: Ip, value: Uid
 
 	UUIDtoUID     sync.Map  // Key: UUID, value: Uid (lock-free, read-heavy)
 	UserLimitInfo *sync.Map // Key: TagUUID value: UserLimitInfo
@@ -56,8 +56,8 @@ type UserLimitInfo struct {
 func AddLimiter(tag string, l *conf.LimitConfig, users []panel.UserInfo, aliveList map[int]int) *Limiter {
 	info := &Limiter{
 		SpeedLimit:    l.SpeedLimit,
-		userOnlineIP:  make(map[string]map[string]int),
-		oldUserOnline: make(map[string]int),
+		UserOnlineIP:  new(sync.Map),
+		OldUserOnline: new(sync.Map),
 		UserLimitInfo: new(sync.Map),
 		SpeedLimiter:  new(sync.Map),
 	}
@@ -110,9 +110,7 @@ func (l *Limiter) UpdateUser(tag string, added []panel.UserInfo, deleted []panel
 		l.SpeedLimiter.Delete(taguuid)
 		l.UUIDtoUID.Delete(deleted[i].Uuid)
 		// Clean up online IP tracking
-		l.onlineMu.Lock()
-		delete(l.userOnlineIP, taguuid)
-		l.onlineMu.Unlock()
+		l.UserOnlineIP.Delete(taguuid)
 	}
 	// Handle modified users: update limits in-place without disrupting connections
 	for i := range modified {
@@ -211,51 +209,44 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 	if noSSUDP {
 		aliveIp := l.getAliveIp(uid)
 
-		l.onlineMu.Lock()
-		ipMap, exists := l.userOnlineIP[taguuid]
-		if !exists {
-			// First connection from this user in this cycle
-			ipMap = make(map[string]int, 4)
-			ipMap[ip] = uid
-			l.userOnlineIP[taguuid] = ipMap
-			l.onlineMu.Unlock()
+		newipMap := new(sync.Map)
+		newipMap.Store(ip, uid)
+		// If any device is online
+		if v, loaded := l.UserOnlineIP.LoadOrStore(taguuid, newipMap); loaded {
+			oldipMap := v.(*sync.Map)
+			// If this is a new ip
+			if _, loaded2 := oldipMap.LoadOrStore(ip, uid); !loaded2 {
+				l.oldOnlineMu.RLock()
+				oldOnline := l.OldUserOnline
+				l.oldOnlineMu.RUnlock()
 
-			// Check if this IP was in previous cycle (old online record)
-			l.oldOnlineMu.RLock()
-			oldUid, oldExists := l.oldUserOnline[ip]
-			l.oldOnlineMu.RUnlock()
-			if oldExists && oldUid == uid {
-				l.oldOnlineMu.Lock()
-				delete(l.oldUserOnline, ip)
-				l.oldOnlineMu.Unlock()
-			} else if deviceLimit > 0 && deviceLimit <= aliveIp {
-				// Over device limit — rollback
-				l.onlineMu.Lock()
-				delete(l.userOnlineIP, taguuid)
-				l.onlineMu.Unlock()
-				return nil, true
+				if v2, loaded3 := oldOnline.Load(ip); loaded3 {
+					if v2.(int) == uid {
+						oldOnline.Delete(ip)
+					}
+				} else if deviceLimit > 0 {
+					if deviceLimit <= aliveIp {
+						oldipMap.Delete(ip)
+						return nil, true
+					}
+				}
 			}
 		} else {
-			if _, ipExists := ipMap[ip]; !ipExists {
-				// New IP for existing user
-				l.oldOnlineMu.RLock()
-				oldUid, oldExists := l.oldUserOnline[ip]
-				l.oldOnlineMu.RUnlock()
-				if oldExists && oldUid == uid {
-					ipMap[ip] = uid
-					l.onlineMu.Unlock()
-					l.oldOnlineMu.Lock()
-					delete(l.oldUserOnline, ip)
-					l.oldOnlineMu.Unlock()
-				} else if deviceLimit > 0 && deviceLimit <= aliveIp {
-					l.onlineMu.Unlock()
-					return nil, true
-				} else {
-					ipMap[ip] = uid
-					l.onlineMu.Unlock()
+			l.oldOnlineMu.RLock()
+			oldOnline := l.OldUserOnline
+			l.oldOnlineMu.RUnlock()
+
+			if v2, ok := oldOnline.Load(ip); ok {
+				if v2.(int) == uid {
+					oldOnline.Delete(ip)
 				}
 			} else {
-				l.onlineMu.Unlock()
+				if deviceLimit > 0 {
+					if deviceLimit <= aliveIp {
+						l.UserOnlineIP.Delete(taguuid)
+						return nil, true
+					}
+				}
 			}
 		}
 	}
@@ -277,23 +268,24 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 
 func (l *Limiter) GetOnlineDevice() ([]panel.OnlineUser, error) {
 	var onlineUser []panel.OnlineUser
-	newOldOnline := make(map[string]int)
+	newOldOnline := new(sync.Map)
 
-	// Per-entry deletion (matching v2node pattern) instead of bulk swap.
-	// This avoids the race where ALL users lose tracking simultaneously,
-	// which combined with stale aliveIp data causes periodic mass rejections.
-	l.onlineMu.Lock()
-	for taguuid, ipMap := range l.userOnlineIP {
-		for ip, uid := range ipMap {
-			newOldOnline[ip] = uid
+	l.UserOnlineIP.Range(func(key, value interface{}) bool {
+		taguuid := key.(string)
+		ipMap := value.(*sync.Map)
+		ipMap.Range(func(key, value interface{}) bool {
+			uid := value.(int)
+			ip := key.(string)
+			newOldOnline.Store(ip, uid)
 			onlineUser = append(onlineUser, panel.OnlineUser{UID: uid, IP: ip})
-		}
-		delete(l.userOnlineIP, taguuid)
-	}
-	l.onlineMu.Unlock()
+			return true
+		})
+		l.UserOnlineIP.Delete(taguuid) // Reset online device
+		return true
+	})
 
 	l.oldOnlineMu.Lock()
-	l.oldUserOnline = newOldOnline
+	l.OldUserOnline = newOldOnline
 	l.oldOnlineMu.Unlock()
 
 	return onlineUser, nil

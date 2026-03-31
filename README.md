@@ -85,37 +85,36 @@ v2bx version         # 查看当前版本
 
 ### Docker 部署
 
+**第一步：生成配置文件**
+
 ```bash
-# 创建配置目录并编辑配置文件
-mkdir -p /etc/V2bX
-vi /etc/V2bX/config.json
-
-# 启动容器
-docker run -d \
-  --name v2bx \
-  --restart=always \
-  --network=host \
-  -v /etc/V2bX:/etc/V2bX \
-  ghcr.io/shannon-x/v2bx:latest
+mkdir -p ./config
+docker run -it --rm -v ./config:/etc/V2bX ghcr.io/shannon-x/v2bx:latest generate
 ```
 
-### Docker Compose 部署
+按交互式向导依次输入机场地址、API Key、内核类型、Node ID、协议等信息，配置文件自动写入 `./config/` 目录。
 
-创建 `docker-compose.yml`：
+**第二步：启动服务**
 
-```yaml
-services:
-  v2bx:
-    image: ghcr.io/shannon-x/v2bx:latest
-    container_name: v2bx
-    restart: always
-    network_mode: host
-    volumes:
-      - /etc/V2bX:/etc/V2bX
-```
+项目根目录已提供 `docker-compose.yml`，直接执行：
 
 ```bash
 docker compose up -d
+```
+
+**常用操作：**
+
+```bash
+docker compose logs -f      # 实时日志
+docker compose restart      # 重启（修改配置后）
+docker compose down         # 停止并移除容器
+```
+
+**重新生成配置：**
+
+```bash
+docker run -it --rm -v ./config:/etc/V2bX ghcr.io/shannon-x/v2bx:latest generate
+docker compose restart
 ```
 
 ---

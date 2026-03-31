@@ -1,0 +1,7 @@
+services:
+  v2bx:
+    image: ghcr.io/shannon-x/v2bx:latest
+    restart: always
+    network_mode: host
+    volumes:
+      - ./config:/etc/V2bX

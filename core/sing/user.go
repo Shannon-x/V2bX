@@ -159,6 +159,11 @@ func (b *Sing) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 					Download: down,
 				})
 			} else if reset && (up > 0 || down > 0) {
+				// Deleted user below threshold: clean up instead of accumulating forever
+				if b.users.uidMap[uuid] == 0 {
+					c.Delete(uuid)
+					return true
+				}
 				traffic.UpCounter.Add(up)
 				traffic.DownCounter.Add(down)
 			} else if reset && up == 0 && down == 0 {

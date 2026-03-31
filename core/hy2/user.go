@@ -86,8 +86,16 @@ func (h *Hysteria2) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTra
 					Download: down,
 				})
 			} else if reset && (up > 0 || down > 0) {
+				// Deleted user below threshold: clean up instead of accumulating forever
+				if h.Auth.usersMap[uuid] == 0 {
+					c.Delete(uuid)
+					return true
+				}
 				traffic.UpCounter.Add(up)
 				traffic.DownCounter.Add(down)
+			} else if h.Auth.usersMap[uuid] == 0 {
+				// Deleted user with zero traffic: clean up the idle entry
+				c.Delete(uuid)
 			}
 			return true
 		})

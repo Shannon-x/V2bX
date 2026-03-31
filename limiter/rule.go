@@ -17,6 +17,8 @@ type PortRange struct {
 }
 
 func (l *Limiter) CheckDomainRule(destination string) (reject bool) {
+	l.RuleMu.RLock()
+	defer l.RuleMu.RUnlock()
 	for i := range l.DomainRules {
 		if l.DomainRules[i].MatchString(destination) {
 			reject = true
@@ -27,6 +29,8 @@ func (l *Limiter) CheckDomainRule(destination string) (reject bool) {
 }
 
 func (l *Limiter) CheckProtocolRule(protocol string) (reject bool) {
+	l.RuleMu.RLock()
+	defer l.RuleMu.RUnlock()
 	for i := range l.ProtocolRules {
 		if l.ProtocolRules[i] == protocol {
 			reject = true
@@ -38,6 +42,8 @@ func (l *Limiter) CheckProtocolRule(protocol string) (reject bool) {
 
 // CheckIPRule checks if the destination IP matches any blocked IP/CIDR
 func (l *Limiter) CheckIPRule(ipStr string) (reject bool) {
+	l.RuleMu.RLock()
+	defer l.RuleMu.RUnlock()
 	if len(l.IPRules) == 0 {
 		return false
 	}
@@ -55,6 +61,8 @@ func (l *Limiter) CheckIPRule(ipStr string) (reject bool) {
 
 // CheckPortRule checks if the destination port matches any blocked port/range
 func (l *Limiter) CheckPortRule(port int) (reject bool) {
+	l.RuleMu.RLock()
+	defer l.RuleMu.RUnlock()
 	for _, pr := range l.PortRules {
 		if port >= pr.Min && port <= pr.Max {
 			return true
@@ -66,6 +74,8 @@ func (l *Limiter) CheckPortRule(port int) (reject bool) {
 // CheckRouteRule checks if destination matches a route rule and returns the target outbound tag.
 // Returns empty string if no rule matches.
 func (l *Limiter) CheckRouteRule(destDomain string, destIP string) string {
+	l.RuleMu.RLock()
+	defer l.RuleMu.RUnlock()
 	for i, rule := range l.RouteRules {
 		switch rule.Type {
 		case "domain":
@@ -100,6 +110,9 @@ func (l *Limiter) CheckRouteRule(destDomain string, destIP string) string {
 }
 
 func (l *Limiter) UpdateRule(rule *panel.Rules) error {
+	l.RuleMu.Lock()
+	defer l.RuleMu.Unlock()
+
 	// Domain rules (block)
 	l.DomainRules = make([]*regexp.Regexp, 0, len(rule.Regexp))
 	for i := range rule.Regexp {

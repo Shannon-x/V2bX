@@ -4,9 +4,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/InazumaV/V2bX/common/counter"
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
-	"github.com/InazumaV/V2bX/common/counter"
 )
 
 var _ buf.TimeoutReader = (*CounterReader)(nil)

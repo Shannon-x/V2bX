@@ -488,7 +488,7 @@ add_node_config() {
         echo -e "${green}2. Vless${plain}"
         echo -e "${green}3. Vmess${plain}"
         echo -e "${green}4. Trojan${plain}"
-        if [ "$core_hysteria2" == true ]; then
+        if [[ "$core_hysteria2" == true || "$core_xray" == true ]]; then
             echo -e "${green}5. Hysteria2${plain}"
         fi
         read -rp "请输入：" NodeType

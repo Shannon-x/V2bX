@@ -11,7 +11,9 @@ import (
 	vCore "github.com/InazumaV/V2bX/core"
 	"github.com/InazumaV/V2bX/core/xray/app/dispatcher"
 	"github.com/xtls/xray-core/common/protocol"
+	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/proxy"
+	hyaccount "github.com/xtls/xray-core/proxy/hysteria/account"
 )
 
 func (c *Xray) GetUserManager(tag string) (proxy.UserManager, error) {
@@ -134,6 +136,8 @@ func (c *Xray) AddUsers(p *vCore.AddUsersParams) (added int, err error) {
 			p.Users,
 			p.Shadowsocks.Cipher,
 			p.Shadowsocks.ServerKey)
+	case "hysteria2":
+		users = buildHysteria2Users(p.Tag, p.Users)
 	default:
 		return 0, fmt.Errorf("unsupported node type: %s", p.NodeInfo.Type)
 	}
@@ -154,4 +158,23 @@ func (c *Xray) AddUsers(p *vCore.AddUsersParams) (added int, err error) {
 		}
 	}
 	return len(users), nil
+}
+
+func buildHysteria2Users(tag string, userInfo []panel.UserInfo) (users []*protocol.User) {
+	users = make([]*protocol.User, len(userInfo))
+	for i := range userInfo {
+		users[i] = buildHysteria2User(tag, &userInfo[i])
+	}
+	return users
+}
+
+func buildHysteria2User(tag string, userInfo *panel.UserInfo) (user *protocol.User) {
+	hysteria2Account := &hyaccount.Account{
+		Auth: userInfo.Uuid,
+	}
+	return &protocol.User{
+		Level:   0,
+		Email:   format.UserTag(tag, userInfo.Uuid),
+		Account: serial.ToTypedMessage(hysteria2Account),
+	}
 }

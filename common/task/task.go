@@ -29,6 +29,7 @@ func (t *Task) Start(first bool) error {
 	t.stop = make(chan struct{})
 	t.access.Unlock()
 
+	stopCh := t.stop // Capture local channel to prevent struct field overwrite issues
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -55,7 +56,7 @@ func (t *Task) Start(first bool) error {
 		for {
 			select {
 			case <-timer.C:
-			case <-t.stop:
+			case <-stopCh:
 				return
 			}
 

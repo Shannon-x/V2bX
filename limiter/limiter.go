@@ -22,21 +22,21 @@ func Init() {
 }
 
 type Limiter struct {
-	RuleMu          sync.RWMutex      // Protects rule slices from data race on hot-reloads
+	RuleMu          sync.RWMutex // Protects rule slices from data race on hot-reloads
 	DomainRules     []*regexp.Regexp
 	ProtocolRules   []string
 	IPRules         []*net.IPNet      // block_ip: CIDR networks to block
 	PortRules       []PortRange       // block_port: port ranges to block
-	RouteRules      []panel.RouteRule // route/route_ip/direct/proxy rules (compiled)
-	RouteDomainRe   []*regexp.Regexp  // compiled domain regexps for RouteRules
+	RouteRules      []panel.RouteRule // route/route_ip/direct/proxy rules (source data)
+	RouteMatcher    *xrayRouteMatcher // Xray-native route matcher (geosite/geoip/domain/ip)
 	DefaultOutbound string            // default_out: custom default outbound tag
 	SpeedLimit      int
 
 	// User online IP tracking: sync.Map for high concurrency lock-free scale
-	UserOnlineIP  *sync.Map         // Key: TagUUID, value: *sync.Map {Key: Ip, value: Uid}
-	
-	oldOnlineMu   sync.RWMutex      // specialized tiny lock just to swap OldUserOnline smoothly
-	OldUserOnline *sync.Map         // Key: Ip, value: Uid
+	UserOnlineIP *sync.Map // Key: TagUUID, value: *sync.Map {Key: Ip, value: Uid}
+
+	oldOnlineMu   sync.RWMutex // specialized tiny lock just to swap OldUserOnline smoothly
+	OldUserOnline *sync.Map    // Key: Ip, value: Uid
 
 	UUIDtoUID     sync.Map  // Key: UUID, value: Uid (lock-free, read-heavy)
 	UserLimitInfo *sync.Map // Key: TagUUID value: UserLimitInfo

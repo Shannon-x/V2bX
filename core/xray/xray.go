@@ -212,6 +212,7 @@ func (c *Xray) Protocols() []string {
 		"vless",
 		"shadowsocks",
 		"trojan",
+		"hysteria2",
 	}
 }
 

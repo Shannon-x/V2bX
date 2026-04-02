@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/InazumaV/V2bX/api/panel"
+	log "github.com/sirupsen/logrus"
 )
 
 // PortRange represents a min-max port range for port-based blocking
@@ -72,39 +73,13 @@ func (l *Limiter) CheckPortRule(port int) (reject bool) {
 }
 
 // CheckRouteRule checks if destination matches a route rule and returns the target outbound tag.
+// Uses Xray's native router engine which supports geosite:, domain:, full:, regexp:, geoip:, IP/CIDR.
 // Returns empty string if no rule matches.
 func (l *Limiter) CheckRouteRule(destDomain string, destIP string) string {
 	l.RuleMu.RLock()
 	defer l.RuleMu.RUnlock()
-	for i, rule := range l.RouteRules {
-		switch rule.Type {
-		case "domain":
-			if destDomain != "" && i < len(l.RouteDomainRe) && l.RouteDomainRe[i] != nil {
-				if l.RouteDomainRe[i].MatchString(destDomain) {
-					return rule.OutboundTag
-				}
-			}
-		case "ip":
-			if destIP != "" {
-				ip := net.ParseIP(destIP)
-				if ip == nil {
-					continue
-				}
-				for _, m := range rule.Match {
-					_, cidr, err := net.ParseCIDR(m)
-					if err != nil {
-						// Try as single IP
-						if net.ParseIP(m) != nil && m == destIP {
-							return rule.OutboundTag
-						}
-						continue
-					}
-					if cidr.Contains(ip) {
-						return rule.OutboundTag
-					}
-				}
-			}
-		}
+	if l.RouteMatcher != nil {
+		return l.RouteMatcher.match(destDomain, destIP)
 	}
 	return ""
 }
@@ -165,24 +140,15 @@ func (l *Limiter) UpdateRule(rule *panel.Rules) error {
 		}
 	}
 
-	// Route rules
+	// Route rules — build Xray-native matcher supporting geosite/geoip/domain/etc.
+	// This replaces the old regexp-based matching that couldn't handle geosite: patterns.
+	// Mirrors v2node's approach: panel match values are passed directly to Xray's router config.
 	l.RouteRules = rule.RouteRules
-	l.RouteDomainRe = make([]*regexp.Regexp, len(rule.RouteRules))
-	for i, rr := range rule.RouteRules {
-		if rr.Type == "domain" && len(rr.Match) > 0 {
-			// Combine all match patterns into one regexp with OR
-			combined := strings.Join(rr.Match, "|")
-			re, err := regexp.Compile(combined)
-			if err != nil {
-				// fallback: try individual patterns
-				continue
-			}
-			l.RouteDomainRe[i] = re
-		}
-	}
-
-	// Default outbound
 	l.DefaultOutbound = rule.DefaultOut
+	l.RouteMatcher = buildXrayRouteMatcher(rule.RouteRules, rule.DefaultOut)
+	if l.RouteMatcher != nil {
+		log.Infof("Route matcher built with %d route rules", len(rule.RouteRules))
+	}
 
 	return nil
 }

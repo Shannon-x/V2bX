@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"encoding/json"
+	"strconv"
 
 	"github.com/InazumaV/V2bX/api/panel"
 	"github.com/InazumaV/V2bX/conf"
@@ -37,8 +38,11 @@ func buildInbound(option *conf.Options, nodeInfo *panel.NodeInfo, tag string) (*
 	case "shadowsocks":
 		err = buildShadowsocks(option, nodeInfo, in)
 		network = "tcp"
+	case "hysteria2":
+		err = buildHysteria2(nodeInfo, in)
+		network = "hysteria"
 	default:
-		return nil, fmt.Errorf("unsupported node type: %s, Only support: V2ray, Trojan, Shadowsocks", nodeInfo.Type)
+		return nil, fmt.Errorf("unsupported node type: %s, Only support: V2ray, Trojan, Shadowsocks, Hysteria2", nodeInfo.Type)
 	}
 	if err != nil {
 		return nil, err
@@ -150,6 +154,10 @@ func buildInbound(option *conf.Options, nodeInfo *panel.NodeInfo, tag string) (*
 					},
 				},
 				RejectUnknownSNI: option.CertConfig.RejectUnknownSni,
+			}
+			if nodeInfo.Type == "hysteria2" || nodeInfo.Type == "tuic" {
+				alpnList := &coreConf.StringList{"h3"}
+				in.StreamSetting.TLSSettings.ALPN = alpnList
 			}
 		}
 	case panel.Reality:
@@ -424,4 +432,54 @@ func buildTrojanFallbacks(fallbackConfigs []conf.FallBackConfigForXray) ([]*core
 		}
 	}
 	return trojanFallBacks, nil
+}
+
+func buildHysteria2(nodeInfo *panel.NodeInfo, inbound *coreConf.InboundDetourConfig) error {
+	inbound.Protocol = "hysteria"
+	s := nodeInfo.Hysteria2
+	if s == nil {
+		return fmt.Errorf("hysteria2 config is missing")
+	}
+	settings := &coreConf.HysteriaServerConfig{
+		Version: 2,
+	}
+
+	t := coreConf.TransportProtocol("hysteria")
+	up := coreConf.Bandwidth(strconv.Itoa(s.UpMbps) + "mbps")
+	down := coreConf.Bandwidth(strconv.Itoa(s.DownMbps) + "mbps")
+	inbound.StreamSetting = &coreConf.StreamConfig{Network: &t}
+	hysteriasetting := &coreConf.HysteriaConfig{
+		Version: 2,
+	}
+	var finalmask *coreConf.FinalMask
+	if !s.Ignore_Client_Bandwidth && (s.UpMbps > 0 || s.DownMbps > 0) {
+		finalmask = &coreConf.FinalMask{
+			QuicParams: &coreConf.QuicParamsConfig{
+				Congestion: "force-brutal",
+				BrutalUp:   up,
+				BrutalDown: down,
+			},
+		}
+	}
+	if s.ObfsType != "" && s.ObfsPassword != "" {
+		rawobfsJSON := json.RawMessage(fmt.Sprintf(`{"password":"%s"}`, s.ObfsPassword))
+		udp := []coreConf.Mask{
+			{
+				Type:     s.ObfsType,
+				Settings: &rawobfsJSON,
+			},
+		}
+		if finalmask == nil {
+			finalmask = &coreConf.FinalMask{}
+		}
+		finalmask.Udp = udp
+	}
+	inbound.StreamSetting.FinalMask = finalmask
+	sets, err := json.Marshal(settings)
+	inbound.Settings = (*json.RawMessage)(&sets)
+	inbound.StreamSetting.HysteriaSettings = hysteriasetting
+	if err != nil {
+		return fmt.Errorf("marshal hysteria2 settings error: %s", err)
+	}
+	return nil
 }

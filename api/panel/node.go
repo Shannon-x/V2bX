@@ -151,13 +151,13 @@ type RawDNS struct {
 }
 
 type Rules struct {
-	Regexp      []string
-	Protocol    []string
-	InboundIP   []string    // block_ip: IP/CIDR patterns to block
-	InboundPort []string    // block_port: port/port-range to block
-	RouteRules  []RouteRule // route/route_ip/direct/proxy rules
-	DefaultOut  string      // default_out: custom default outbound tag
-	RawDefaultOut string    // default_out: full JSON if default outbound originates from custom JSON
+	Regexp        []string
+	Protocol      []string
+	InboundIP     []string    // block_ip: IP/CIDR patterns to block
+	InboundPort   []string    // block_port: port/port-range to block
+	RouteRules    []RouteRule // route/route_ip/direct/proxy rules
+	DefaultOut    string      // default_out: custom default outbound tag
+	RawDefaultOut string      // default_out: full JSON if default outbound originates from custom JSON
 }
 
 // RouteRule represents a dynamic routing rule from the panel
@@ -450,7 +450,7 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 			if cm.Routes[i].Action == "route_ip" {
 				ruleType = "ip"
 			}
-			
+
 			node.Rules.RouteRules = append(node.Rules.RouteRules, RouteRule{
 				Type:        ruleType,
 				Match:       matchs,

@@ -87,7 +87,7 @@ func (c *Controller) Start() error {
 	if err != nil {
 		return fmt.Errorf("add new node error: %s", err)
 	}
-	
+
 	err = c.server.AddNodeCustomOutbounds(node)
 	if err != nil {
 		log.WithField("tag", c.tag).Errorf("Add custom outbounds error: %v", err)

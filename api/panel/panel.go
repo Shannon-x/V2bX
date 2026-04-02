@@ -45,11 +45,11 @@ func New(c *conf.ApiConfig) (*Client, error) {
 		MaxIdleConnsPerHost: 10,
 		IdleConnTimeout:     90 * time.Second,
 	})
-	client.SetRetryCount(3)
+	client.SetRetryCount(0)
 	if c.Timeout > 0 {
 		client.SetTimeout(time.Duration(c.Timeout) * time.Second)
 	} else {
-		client.SetTimeout(5 * time.Second)
+		client.SetTimeout(30 * time.Second)
 	}
 	client.OnError(func(req *resty.Request, err error) {
 		var v *resty.ResponseError

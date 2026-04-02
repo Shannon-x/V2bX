@@ -22,6 +22,7 @@ func Init() {
 }
 
 type Limiter struct {
+	NodeType        string
 	RuleMu          sync.RWMutex // Protects rule slices from data race on hot-reloads
 	DomainRules     []*regexp.Regexp
 	ProtocolRules   []string
@@ -53,8 +54,9 @@ type UserLimitInfo struct {
 	OverLimit         bool
 }
 
-func AddLimiter(tag string, l *conf.LimitConfig, users []panel.UserInfo, aliveList map[int]int) *Limiter {
+func AddLimiter(nodeType string, tag string, l *conf.LimitConfig, users []panel.UserInfo, aliveList map[int]int) *Limiter {
 	info := &Limiter{
+		NodeType:      nodeType,
 		SpeedLimit:    l.SpeedLimit,
 		UserOnlineIP:  new(sync.Map),
 		OldUserOnline: new(sync.Map),
@@ -206,7 +208,7 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 	}
 
 	// Device limit check — only for source-TCP connections (matching v2node)
-	if noSSUDP {
+	if noSSUDP || l.NodeType == "hysteria2" {
 		aliveIp := l.getAliveIp(uid)
 
 		newipMap := new(sync.Map)

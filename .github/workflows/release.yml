@@ -45,6 +45,12 @@ jobs:
             echo "VERSION_TAG=${VERSION_TAG}" >> $GITHUB_OUTPUT
             echo "RELEASE_NAME=${VERSION_TAG} - ${COMMIT_MSG}" >> $GITHUB_OUTPUT
           fi
+      - name: Pre-create Release
+        if: github.event_name != 'release'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ steps.tag.outputs.VERSION_TAG }} --title "${{ steps.tag.outputs.RELEASE_NAME }}" --notes "Auto-generated release for ${{ steps.tag.outputs.VERSION_TAG }}" || true
 
   build:
     needs: prepare

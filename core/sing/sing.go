@@ -146,6 +146,5 @@ func (b *Sing) rebuildInbound(tag string, inboundType string, opts any) error {
 	if err != nil {
 		return fmt.Errorf("rebuild inbound error: %s", err)
 	}
-	b.box.Router().AppendTracker(b.hookServer)
 	return nil
 }

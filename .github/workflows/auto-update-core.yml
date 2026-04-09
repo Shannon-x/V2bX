@@ -11,6 +11,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: write
     steps:
       - name: Checkout codebase
         uses: actions/checkout@v4
@@ -105,12 +106,10 @@ jobs:
           # 推送到 dev_new
           git push origin dev_new
 
-          # 使用当前日期生成版本号作为 tag
-          VERSION_TAG="v1.0.$(date +'%Y%m%d%H%M')"
-          echo "Generating new release tag: $VERSION_TAG"
-
-          # 创建 GitHub Release，这将自动触发 Release.yml 中的构建和 Docker 发布流程
-          gh release create $VERSION_TAG \
-            --title "Core Update $VERSION_TAG" \
-            --notes "Automated release due to upstream core dependency updates (xray-core / sing-box / hysteria2)." \
-            --target dev_new
+          # 触发 Release.yml 中的构建和发布流程
+          echo "Triggering Build and Release workflow..."
+          gh workflow run release.yml --ref dev_new
+          
+          # 触发 Docker 分发流程
+          echo "Triggering Docker Publish workflow..."
+          gh workflow run "Publish Docker image.yml" --ref dev_new

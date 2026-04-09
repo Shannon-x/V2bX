@@ -41,10 +41,41 @@ func (c *Xray) AddNode(tag string, info *panel.NodeInfo, config *conf.Options) e
 	if err != nil {
 		return fmt.Errorf("add inbound error: %s", err)
 	}
-	outBoundConfig, err := buildOutbound(config, tag)
-	if err != nil {
-		return fmt.Errorf("build outbound error: %s", err)
+
+	// Build outbound: use custom default_out if configured, otherwise freedom
+	var outBoundConfig *core.OutboundHandlerConfig
+	if info.Rules.RawDefaultOut != "" {
+		// Panel provided a full custom outbound JSON (e.g. SOCKS proxy)
+		outBoundConfig, err = buildCustomOutbound(info.Rules.RawDefaultOut, tag)
+		if err != nil {
+			log.WithFields(log.Fields{
+				"tag": tag,
+				"err": err,
+			}).Warn("Failed to build custom default_out outbound, falling back to freedom")
+			outBoundConfig, err = buildOutbound(config, tag)
+			if err != nil {
+				return fmt.Errorf("build outbound error: %s", err)
+			}
+		} else {
+			log.WithField("tag", tag).Infof("Using custom default_out outbound: %s", info.Rules.DefaultOut)
+		}
+	} else if info.Rules.DefaultOut != "" {
+		// Only a tag was provided, no raw config — log warning
+		log.WithFields(log.Fields{
+			"tag":         tag,
+			"default_out": info.Rules.DefaultOut,
+		}).Warn("default_out tag specified but no raw outbound config provided, using freedom")
+		outBoundConfig, err = buildOutbound(config, tag)
+		if err != nil {
+			return fmt.Errorf("build outbound error: %s", err)
+		}
+	} else {
+		outBoundConfig, err = buildOutbound(config, tag)
+		if err != nil {
+			return fmt.Errorf("build outbound error: %s", err)
+		}
 	}
+
 	err = c.addOutbound(outBoundConfig)
 	if err != nil {
 		return fmt.Errorf("add outbound error: %s", err)

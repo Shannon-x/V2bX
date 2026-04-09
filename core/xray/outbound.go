@@ -41,3 +41,16 @@ func buildOutbound(config *conf2.Options, tag string) (*core.OutboundHandlerConf
 	outboundDetourConfig.Settings = &setting
 	return outboundDetourConfig.Build()
 }
+
+// buildCustomOutbound builds an outbound from raw JSON config provided by the panel's
+// default_out route action_value. The tag is overridden to match the node tag so that
+// traffic for this node is routed through the custom outbound.
+func buildCustomOutbound(rawJSON string, tag string) (*core.OutboundHandlerConfig, error) {
+	outboundDetourConfig := &conf.OutboundDetourConfig{}
+	if err := json.Unmarshal([]byte(rawJSON), outboundDetourConfig); err != nil {
+		return nil, fmt.Errorf("unmarshal custom outbound config error: %s", err)
+	}
+	// Override tag to match the node tag
+	outboundDetourConfig.Tag = tag
+	return outboundDetourConfig.Build()
+}

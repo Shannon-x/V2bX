@@ -397,6 +397,25 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 
 	// parse rules and dns
 	for i := range cm.Routes {
+		// Handle default_out before match parsing,
+		// because default_out by design has no match patterns.
+		if cm.Routes[i].Action == "default_out" {
+			outboundTag := cm.Routes[i].ActionValue
+			var rawOutbound string
+			if strings.HasPrefix(strings.TrimSpace(outboundTag), "{") {
+				var partial map[string]interface{}
+				if err := json.Unmarshal([]byte(outboundTag), &partial); err == nil {
+					if tag, ok := partial["tag"].(string); ok && tag != "" {
+						rawOutbound = outboundTag
+						outboundTag = tag
+					}
+				}
+			}
+			node.Rules.DefaultOut = outboundTag
+			node.Rules.RawDefaultOut = rawOutbound
+			continue
+		}
+
 		var matchs []string
 		switch v := cm.Routes[i].Match.(type) {
 		case string:

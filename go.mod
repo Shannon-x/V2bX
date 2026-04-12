@@ -355,6 +355,6 @@ require (
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
 
-replace github.com/xtls/xray-core => github.com/wyx2685/xray-core v0.0.0-20260407142113-74bd4b11ba8e
+replace github.com/xtls/xray-core => github.com/wyx2685/xray-core v0.0.0-20260411201301-60b127eaedf7
 
 replace github.com/apernet/quic-go => github.com/apernet/quic-go v0.59.1-0.20260217092621-db4786c77a22

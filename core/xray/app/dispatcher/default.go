@@ -5,7 +5,6 @@ package dispatcher
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -32,23 +31,7 @@ import (
 	"github.com/xtls/xray-core/transport/pipe"
 )
 
-var (
-	errSniffingTimeout = errors.New("timeout on sniffing")
-	// Cache compiled regexps for shouldOverride to avoid recompilation on every connection
-	regexpCache sync.Map // map[string]*regexp.Regexp
-)
-
-func getCompiledRegexp(pattern string) (*regexp.Regexp, error) {
-	if v, ok := regexpCache.Load(pattern); ok {
-		return v.(*regexp.Regexp), nil
-	}
-	re, err := regexp.Compile(pattern)
-	if err != nil {
-		return nil, err
-	}
-	regexpCache.Store(pattern, re)
-	return re, nil
-}
+var errSniffingTimeout = errors.New("timeout on sniffing")
 
 type cachedReader struct {
 	sync.Mutex
@@ -255,22 +238,8 @@ func (d *DefaultDispatcher) shouldOverride(ctx context.Context, result SniffResu
 	if domain == "" {
 		return false
 	}
-	for _, d := range request.ExcludeForDomain {
-		if strings.HasPrefix(d, "regexp:") {
-			pattern := d[7:]
-			re, err := getCompiledRegexp(pattern)
-			if err != nil {
-				errors.LogInfo(ctx, "Unable to compile regex")
-				continue
-			}
-			if re.MatchString(domain) {
-				return false
-			}
-		} else {
-			if strings.ToLower(domain) == d {
-				return false
-			}
-		}
+	if request.ExcludeForDomain != nil && request.ExcludeForDomain.MatchAny(strings.ToLower(domain)) {
+		return false
 	}
 	protocolString := result.Protocol()
 	if resComp, ok := result.(SnifferResultComposite); ok {

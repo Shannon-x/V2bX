@@ -62,7 +62,7 @@ func buildInbound(option *conf.Options, nodeInfo *panel.NodeInfo, tag string) (*
 	// Set SniffingConfig
 	sniffingConfig := &coreConf.SniffingConfig{
 		Enabled:      true,
-		DestOverride: &coreConf.StringList{"http", "tls"},
+		DestOverride: coreConf.StringList{"http", "tls"},
 	}
 	if option.XrayOptions.DisableSniffing {
 		sniffingConfig.Enabled = false

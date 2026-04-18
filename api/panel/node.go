@@ -397,11 +397,13 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 
 	// parse rules and dns
 	for i := range cm.Routes {
-		// Handle default_out before match parsing,
-		// because default_out by design has no match patterns.
+		// Handle default_out before match parsing, because default_out
+		// by design has no match patterns (it applies to ALL traffic).
 		if cm.Routes[i].Action == "default_out" {
 			outboundTag := cm.Routes[i].ActionValue
 			var rawOutbound string
+
+			// If it starts with { it could be a JSON outbound object
 			if strings.HasPrefix(strings.TrimSpace(outboundTag), "{") {
 				var partial map[string]interface{}
 				if err := json.Unmarshal([]byte(outboundTag), &partial); err == nil {
@@ -411,6 +413,7 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 					}
 				}
 			}
+
 			node.Rules.DefaultOut = outboundTag
 			node.Rules.RawDefaultOut = rawOutbound
 			continue
@@ -476,23 +479,6 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 				OutboundTag: outboundTag,
 				RawOutbound: rawOutbound,
 			})
-		case "default_out":
-			outboundTag := cm.Routes[i].ActionValue
-			var rawOutbound string
-
-			// If it starts with { it could be a JSON outbound object
-			if strings.HasPrefix(strings.TrimSpace(outboundTag), "{") {
-				var partial map[string]interface{}
-				if err := json.Unmarshal([]byte(outboundTag), &partial); err == nil {
-					if tag, ok := partial["tag"].(string); ok && tag != "" {
-						rawOutbound = outboundTag
-						outboundTag = tag
-					}
-				}
-			}
-
-			node.Rules.DefaultOut = outboundTag
-			node.Rules.RawDefaultOut = rawOutbound
 		case "direct":
 			node.Rules.RouteRules = append(node.Rules.RouteRules, RouteRule{
 				Type: "domain", Match: matchs, OutboundTag: "direct",

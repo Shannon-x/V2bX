@@ -36,7 +36,7 @@ jobs:
 
           # 更新 hysteria core 和 extras
           # 注意：hysteria 和 xray-core 共享 apernet/quic-go，需要版本兼容
-          # 先获取 xray-core 使用的 quic-go 版本作为基准
+          # 先记录当前 quic-go 版本，后面会在 xray-core 更新后重新对齐
           echo "Checking for hysteria updates..."
           XRAY_QUIC_VER=$(grep 'replace github.com/apernet/quic-go' go.mod | awk '{print $NF}')
           echo "Current quic-go (pinned by xray-core): $XRAY_QUIC_VER"
@@ -58,6 +58,21 @@ jobs:
 
           echo "Run go mod tidy to resolve latest pseudo-versions..."
           go mod tidy
+
+          # xray-core 的 hysteria 传输会直接使用 apernet/quic-go 的扩展字段。
+          # xray-core 更新后必须重新读取它自身声明的 quic-go 版本，否则旧 replace
+          # 会覆盖 xray-core 的 require，导致 quic.Config 字段不匹配。
+          XRAY_DIR=$(go list -m -f '{{.Dir}}' github.com/xtls/xray-core)
+          XRAY_QUIC_VER=$(grep 'github.com/apernet/quic-go' "$XRAY_DIR/go.mod" | awk '{print $2}')
+          if [ -n "$XRAY_QUIC_VER" ]; then
+            echo "Align quic-go with updated xray-core: $XRAY_QUIC_VER"
+            go mod edit -replace="github.com/apernet/quic-go=github.com/apernet/quic-go@${XRAY_QUIC_VER}"
+            go get "github.com/apernet/quic-go@${XRAY_QUIC_VER}"
+            go mod tidy
+          else
+            echo "Unable to find xray-core quic-go requirement."
+            exit 1
+          fi
 
           # 验证更新后的依赖是否能通过编译
           echo "Verifying build with updated cores..."

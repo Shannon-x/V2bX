@@ -1191,8 +1191,8 @@ github.com/volcengine/volc-sdk-golang v1.0.216 h1:+wAq8RvxpGECveRJaAXZFpzrZoQ33W
 github.com/volcengine/volc-sdk-golang v1.0.216/go.mod h1:zHJlaqiMbIB+0mcrsZPTwOb3FB7S/0MCfqlnO8R7hlM=
 github.com/vultr/govultr/v3 v3.21.1 h1:0cnA8fXiqayPGbAlNHaW+5oCQjpDNkkAm3Nt3LOHplM=
 github.com/vultr/govultr/v3 v3.21.1/go.mod h1:9WwnWGCKnwDlNjHjtt+j+nP+0QWq6hQXzaHgddqrLWY=
-github.com/wyx2685/xray-core v0.0.0-20260502181714-0b9d0b54c470 h1:NLB3YUXQrja+8XdBQjfnvt/kInSBVSuz4bdMmn7Zbto=
-github.com/wyx2685/xray-core v0.0.0-20260502181714-0b9d0b54c470/go.mod h1:Vjdtc0b7IuGACuvPJnRBfto23lxJLVOKWGFtieNPTuo=
+github.com/wyx2685/xray-core v0.0.0-20260504202700-6f1e299a2bce h1:F34KQbcIqfx2PHL4b24f2L55ZZPxUSYciOtDYrQfSvY=
+github.com/wyx2685/xray-core v0.0.0-20260504202700-6f1e299a2bce/go.mod h1:Vjdtc0b7IuGACuvPJnRBfto23lxJLVOKWGFtieNPTuo=
 github.com/x448/float16 v0.8.4 h1:qLwI1I70+NjRFUR3zs1JPUCgaCXSh3SW62uAKT1mSBM=
 github.com/x448/float16 v0.8.4/go.mod h1:14CWIYCyZA/cWjXOioeEpHeN/83MdbZDRQHoFcYsOfg=
 github.com/xdg-go/pbkdf2 v1.0.0/go.mod h1:jrpuAogTd400dnrH08LKmI/xc1MbPOebTwRqcT5RDeI=

@@ -49,35 +49,31 @@
 | **Wave 3** | 性能与上报正确性（rate 三连 / 流量回填 / ctx 化 / ManagedWriter atomic） | 🟢 已开 PR | [#6](https://github.com/Shannon-x/V2bX/pull/6) |
 | **Wave 4** | 安全硬化（Include SSRF / json5 上限 / ObfsPassword Marshal / X25519 默认随机 / AES base64） | 🟢 已开 PR | [#7](https://github.com/Shannon-x/V2bX/pull/7) |
 | **Wave 5** | 生命周期收尾（Start 回滚 / debounce 常量统一 / 共享缺陷标注） | 🟢 已开 PR | [#8](https://github.com/Shannon-x/V2bX/pull/8) |
-| **Wave 6** | 审计残留闭环 + 性能优化（**#8 自定义出站加固** / #3 hy2 cache / #31 sing per-tag 锁 / #50 json5 cap / B1 alloc / B3 dirty-set / B4 并行 close） | 🟢 已开 PR | [#9](https://github.com/Shannon-x/V2bX/pull/9) |
+| **Wave 6** | 审计残留闭环 + 性能优化（**#8 自定义出站可选硬化** / #3 hy2 cache / #31 sing per-tag 锁 / #50 json5 cap / B1 alloc / B3 dirty-set / B4 并行 close） | 🟢 已开 PR | [#9](https://github.com/Shannon-x/V2bX/pull/9) |
 
 **修复完成度（Wave 1-6 全部开 PR 后）**：
 
-- 审计 62 项：**全部 62 项已修复**
+- 审计 62 项：**全部 62 项已处理**
 - 额外性能优化（B1 / B3 / B4）：3 项已实施
-- 仅 **#8 自定义出站** 实施方式为"默认安全（白名单 freedom + blackhole）+ 显式 opt-in 放开"——见下方 §3.3 信任边界声明与 [conf/custom_outbound.go](conf/custom_outbound.go) 的 `AllowedProtocols=["*"]` 升级兼容开关。
+- **#8 自定义出站**：维护者决策保持"默认接受所有面板下发"（核心功能，不能破坏）；W6 提供 `CustomOutboundConfig` **可选**硬化选项（多租户场景使用），见下方 §3.3。
 - 既往的部分项："W2.9 sing 锁粒度"、"W3.6 hy2 logger CheckLimit 缓存"、"W4.2 json5 后半" 全部在 Wave 6 闭环。
 
-**重要升级提示**（Wave 6 引入的唯一行为变更）：
+**升级兼容性**：Wave 6 **不引入任何行为变更**。面板下发的自定义出站继续按原样接受所有协议，**无需修改任何节点配置**。
 
-V2bX 升级到包含 PR #9 的版本后，**面板下发的自定义出站默认仅接受 freedom 和 blackhole 协议**。如果你的部署依赖 panel 下发 socks5 / http / vmess 等出站，需要在 `Options` 节点配置里加：
+> ℹ️ **2026-06-03 维护者决策更正**：早先版本的 Wave 6 曾把 #8 默认收紧为"白名单 freedom/blackhole 然后让用户 opt-in"。维护者指出这会破坏所有依赖 panel 下发 socks/http/vmess 出站的生产部署——这是 V2bX 核心功能而非例外用法。最终决定**保持默认允许全部**，把白名单做成可选加固选项。详见 §3.3。
+
+如果你**主动想要**限制面板可下发的出站协议（典型场景：多租户节点，面板和节点不是同一方管理），可以在 `Options` 节点配置加：
 
 ```jsonc
 {
   "CustomOutbound": {
-    "AllowedProtocols": ["*"]   // 恢复 Wave 6 前的"全部接受"行为
-    // 或更精细: ["freedom","blackhole","socks","http"]
+    "AllowedProtocols": ["freedom","blackhole","socks"]  // 显式白名单
+    // 或 "Enabled": false 完全禁用
   }
 }
 ```
 
-升级后未配置 `CustomOutbound` 但有外部协议的部署，会在日志看到类似：
-
-```
-Custom outbound route:foo rejected: protocol "socks" not in CustomOutbound.AllowedProtocols.
-To restore pre-W6 behavior set CustomOutbound.AllowedProtocols=["*"] in node Options
-(see AUDIT_REPORT §3.3 for the security rationale).
-```
+不配置 `CustomOutbound` → 接受所有面板下发出站（默认，等同 pre-W6 行为）。
 
 ---
 
@@ -198,23 +194,28 @@ V2bX 在 `dev_new` 分支上对比 v2node 引入了多个本不存在的高危�
 
 ---
 
-### 3.3 自定义出站 JSON 热加载到 xray — 完全 MITM 能力（**Wave 6 已修复 — 默认安全 + 显式 opt-in**）
+### 3.3 自定义出站 JSON 热加载到 xray — 完全 MITM 能力（**信任边界声明 + 可选硬化**）
 
 [core/xray/node.go:94-141](core/xray/node.go#L94-L141) `AddNodeCustomOutbounds` 把面板返回的 `RawOutbound`/`RawDefaultOut` 直接 `json.Unmarshal` 到 `coreConf.OutboundDetourConfig` 然后 `ohm.AddHandler`，**无协议白名单、无 sendThrough 校验、无操作员审批**。
 
 **潜在影响**：面板沦陷立即升级为**所有代理流量的运行时 MITM**——可路由任意域名到攻击者出站、嗅探非端到端 TLS 流量、跨内网横移。
 
-> ✅ **Wave 6 修复（PR [#9](https://github.com/Shannon-x/V2bX/pull/9)）**：
-> 新增 [conf/custom_outbound.go](conf/custom_outbound.go) 的 `CustomOutboundConfig`，
-> 把信任边界从隐式约定变成显式 runtime 强制：
+> ⚠️ **维护者决策（2026-06-03 最终版）**：**保持默认允许全部**——面板下发自定义出站是 V2bX 核心功能而非例外，绝大多数生产部署依赖此功能进行路由配置。强制收紧会静默破坏所有这些部署。
 >
-> - **默认**：仅接受 `freedom` 和 `blackhole`（不会路由流量到外部远端的协议）
-> - **opt-in**：部署方在节点 Options 配置 `CustomOutbound.AllowedProtocols`，可显式扩展到 `["freedom","socks","http",...]` 或完全恢复旧行为 `["*"]`
-> - **opt-out**：`CustomOutbound.Enabled=false` 完全拒绝面板下发的任意 outbound JSON
+> **本节作为信任边界声明**：
+> **使用 V2bX 并允许面板下发自定义出站时，部署方必须将面板访问凭证（admin token / DB 凭证）视同节点 root 凭证保护。**面板侧任何沦陷都意味着所有出站流量可被运行时重路由。
 >
-> 部署方仍须明白：**配置了 `AllowedProtocols=["*"]` 等于明确把面板纳入信任边界，面板访问凭证（admin token / DB 凭证）必须视同节点 root 凭证保护。**
+> ✅ **Wave 6 提供了可选硬化机制（PR [#9](https://github.com/Shannon-x/V2bX/pull/9)）**：
+> 新增 [conf/custom_outbound.go](conf/custom_outbound.go) 的 `CustomOutboundConfig`，**默认不启用**。需要更严格隔离的部署方可显式 opt-in：
 >
-> 升级提示见上方"重要升级提示"段落。
+> | 配置 | 效果 |
+> |---|---|
+> | （省略 / nil） | **接受所有**（默认，等同 pre-W6） |
+> | `Enabled=false` | 拒绝所有面板下发出站 |
+> | `AllowedProtocols=["freedom","socks"]` | 仅接受白名单协议 |
+> | `AllowedProtocols=["*"]` | 显式表示接受所有 |
+>
+> 典型使用场景：多租户节点（面板和节点运维方不是同一人），或对接陌生面板时希望先收紧再观察。普通"自管面板 + 自管节点"部署**无需任何额外配置**。
 
 ---
 
@@ -321,7 +322,7 @@ V2bX 在 `dev_new` 分支上对比 v2node 引入了多个本不存在的高危�
 | 5 | high | concurrency | [core/hy2/hy2.go:13](core/hy2/hy2.go#L13) | `Hy2nodes` map 无锁 → 并发读写 fatal | W2.1 |
 | 6 | high | security | [node/lego.go:149-166](node/lego.go#L149-L166) | ACME 私钥写为 0644 | W1.1 |
 | 7 | high | vulnerability | [core/xray/inbound.go:464-476](core/xray/inbound.go#L464-L476) | ObfsPassword JSON 注入 | W4.4 |
-| 8 | high | vulnerability | [core/xray/node.go:94-141](core/xray/node.go#L94-L141) | 面板可控自定义出站热加载 | W6 默认安全 + opt-in ([#9](https://github.com/Shannon-x/V2bX/pull/9)) — 见 §3.3 |
+| 8 | high | vulnerability | [core/xray/node.go:94-141](core/xray/node.go#L94-L141) | 面板可控自定义出站热加载 | 信任边界声明 + W6 可选硬化（默认不启用，[#9](https://github.com/Shannon-x/V2bX/pull/9)）— 见 §3.3 |
 | 9 | high | vulnerability | [conf/node.go:18-31,61-89](conf/node.go#L18-L89) | Include URL DNS rebinding SSRF + 无大小限制 | W4.1 |
 | 10 | high | bug | [core/hy2/logger.go:49-118](core/hy2/logger.go#L49-L118) | zap.Panic 在请求路径致整进程崩溃 | W1.3 |
 | 11 | high | bug | [core/hy2/config.go:84-90](core/hy2/config.go#L84-L90) | InitStreamReceiveWindow 永不生效（与 #2 同根） | W1.2 |

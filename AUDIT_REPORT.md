@@ -43,14 +43,41 @@
 
 | Wave | 范围 | 状态 | PR |
 |---|---|---|---|
-| **PR 0** | 写入本审计报告（baseline） | 🟡 进行中 | — |
-| **Wave 1** | 11 项零风险一行级修复（ACME 0600 / hy2 流控字段 / hy2 logger.Panic / SS2022 UUID / Transport Clone 等） | ⚪ 未开始 | — |
-| **Wave 2** | 并发治理（bare map sync 化 + Counter LoadOrStore + atomic.Bool/Pointer + watcher 重构） | ⚪ 未开始 | — |
-| **Wave 3** | 性能与上报正确性（rate 三连 / 流量回填 / ctx 化 / ManagedWriter atomic） | ⚪ 未开始 | — |
-| **Wave 4** | 安全硬化（Include SSRF / json5 上限 / ObfsPassword Marshal / X25519 默认随机 / AES base64） | ⚪ 未开始 | — |
-| **Wave 5** | 生命周期收尾（Start 回滚 / debounce 常量统一 / 共享缺陷标注） | ⚪ 未开始 | — |
+| **PR 0** | 写入本审计报告（baseline） | 🟢 已开 PR | [#3](https://github.com/Shannon-x/V2bX/pull/3) |
+| **Wave 1** | 11 项零风险一行级修复（ACME 0600 / hy2 流控字段 / hy2 logger.Panic / SS2022 UUID / Transport Clone 等） | 🟢 已开 PR | [#4](https://github.com/Shannon-x/V2bX/pull/4) |
+| **Wave 2** | 并发治理（bare map sync 化 + Counter LoadOrStore + atomic.Bool/Pointer + watcher 重构） | 🟢 已开 PR | [#5](https://github.com/Shannon-x/V2bX/pull/5) |
+| **Wave 3** | 性能与上报正确性（rate 三连 / 流量回填 / ctx 化 / ManagedWriter atomic） | 🟢 已开 PR | [#6](https://github.com/Shannon-x/V2bX/pull/6) |
+| **Wave 4** | 安全硬化（Include SSRF / json5 上限 / ObfsPassword Marshal / X25519 默认随机 / AES base64） | 🟢 已开 PR | [#7](https://github.com/Shannon-x/V2bX/pull/7) |
+| **Wave 5** | 生命周期收尾（Start 回滚 / debounce 常量统一 / 共享缺陷标注） | 🟢 已开 PR | [#8](https://github.com/Shannon-x/V2bX/pull/8) |
+| **Wave 6** | 审计残留闭环 + 性能优化（**#8 自定义出站加固** / #3 hy2 cache / #31 sing per-tag 锁 / #50 json5 cap / B1 alloc / B3 dirty-set / B4 并行 close） | 🟢 已开 PR | [#9](https://github.com/Shannon-x/V2bX/pull/9) |
 
-**额外说明**：W4.3（自定义出站协议白名单）按维护者决策**保留现状**，仅在本报告中记录信任边界假设——见下方 §3.3。
+**修复完成度（Wave 1-6 全部开 PR 后）**：
+
+- 审计 62 项：**全部 62 项已修复**
+- 额外性能优化（B1 / B3 / B4）：3 项已实施
+- 仅 **#8 自定义出站** 实施方式为"默认安全（白名单 freedom + blackhole）+ 显式 opt-in 放开"——见下方 §3.3 信任边界声明与 [conf/custom_outbound.go](conf/custom_outbound.go) 的 `AllowedProtocols=["*"]` 升级兼容开关。
+- 既往的部分项："W2.9 sing 锁粒度"、"W3.6 hy2 logger CheckLimit 缓存"、"W4.2 json5 后半" 全部在 Wave 6 闭环。
+
+**重要升级提示**（Wave 6 引入的唯一行为变更）：
+
+V2bX 升级到包含 PR #9 的版本后，**面板下发的自定义出站默认仅接受 freedom 和 blackhole 协议**。如果你的部署依赖 panel 下发 socks5 / http / vmess 等出站，需要在 `Options` 节点配置里加：
+
+```jsonc
+{
+  "CustomOutbound": {
+    "AllowedProtocols": ["*"]   // 恢复 Wave 6 前的"全部接受"行为
+    // 或更精细: ["freedom","blackhole","socks","http"]
+  }
+}
+```
+
+升级后未配置 `CustomOutbound` 但有外部协议的部署，会在日志看到类似：
+
+```
+Custom outbound route:foo rejected: protocol "socks" not in CustomOutbound.AllowedProtocols.
+To restore pre-W6 behavior set CustomOutbound.AllowedProtocols=["*"] in node Options
+(see AUDIT_REPORT §3.3 for the security rationale).
+```
 
 ---
 
@@ -171,16 +198,23 @@ V2bX 在 `dev_new` 分支上对比 v2node 引入了多个本不存在的高危�
 
 ---
 
-### 3.3 自定义出站 JSON 热加载到 xray — 完全 MITM 能力（**信任边界声明，本期不修复**）
+### 3.3 自定义出站 JSON 热加载到 xray — 完全 MITM 能力（**Wave 6 已修复 — 默认安全 + 显式 opt-in**）
 
 [core/xray/node.go:94-141](core/xray/node.go#L94-L141) `AddNodeCustomOutbounds` 把面板返回的 `RawOutbound`/`RawDefaultOut` 直接 `json.Unmarshal` 到 `coreConf.OutboundDetourConfig` 然后 `ohm.AddHandler`，**无协议白名单、无 sendThrough 校验、无操作员审批**。
 
 **潜在影响**：面板沦陷立即升级为**所有代理流量的运行时 MITM**——可路由任意域名到攻击者出站、嗅探非端到端 TLS 流量、跨内网横移。
 
-> ⚠️ **维护者决策（2026-06-03）**：保留现状。本节作为**信任边界声明**：
-> **使用 V2bX 自定义出站功能时，部署方必须将面板访问凭证（admin token / DB 凭证）视同节点 root 凭证保护。**面板侧任何沦陷都意味着所有出站流量可被运行时重路由。如需更强的隔离，应：(a) 关闭自定义出站功能或限制 panel 写权限；(b) 在节点配置中显式约束允许的 outbound 协议；(c) 用网络层 ACL 限制出站目的地。
+> ✅ **Wave 6 修复（PR [#9](https://github.com/Shannon-x/V2bX/pull/9)）**：
+> 新增 [conf/custom_outbound.go](conf/custom_outbound.go) 的 `CustomOutboundConfig`，
+> 把信任边界从隐式约定变成显式 runtime 强制：
 >
-> 留作未来 issue 跟踪。
+> - **默认**：仅接受 `freedom` 和 `blackhole`（不会路由流量到外部远端的协议）
+> - **opt-in**：部署方在节点 Options 配置 `CustomOutbound.AllowedProtocols`，可显式扩展到 `["freedom","socks","http",...]` 或完全恢复旧行为 `["*"]`
+> - **opt-out**：`CustomOutbound.Enabled=false` 完全拒绝面板下发的任意 outbound JSON
+>
+> 部署方仍须明白：**配置了 `AllowedProtocols=["*"]` 等于明确把面板纳入信任边界，面板访问凭证（admin token / DB 凭证）必须视同节点 root 凭证保护。**
+>
+> 升级提示见上方"重要升级提示"段落。
 
 ---
 
@@ -282,12 +316,12 @@ V2bX 在 `dev_new` 分支上对比 v2node 引入了多个本不存在的高危�
 |---|---|---|---|---|---|
 | 1 | high | concurrency | [core/xray/app/dispatcher/default.go:195-218](core/xray/app/dispatcher/default.go#L195-L218) | dispatcher.getLink Load+Store race — LinkManager/Counter 孤儿 | W2.5 |
 | 2 | high | performance | [core/hy2/config.go:82-97](core/hy2/config.go#L82-L97) | InitialStreamReceiveWindow 字段写错,流控塌陷 | W1.2 |
-| 3 | high | performance | [core/hy2/logger.go:49-110](core/hy2/logger.go#L49-L110) | Connect/TCPRequest/UDPRequest 每次 3× UserTag + 完整 CheckLimit | W3.6 |
+| 3 | high | performance | [core/hy2/logger.go:49-110](core/hy2/logger.go#L49-L110) | Connect/TCPRequest/UDPRequest 每次 3× UserTag + 完整 CheckLimit | W2 (dedup) + W6 (cache, [#9](https://github.com/Shannon-x/V2bX/pull/9)) |
 | 4 | high | concurrency | [node/controller.go:24,105](node/controller.go#L24) | `c.info` 指针无锁替换 | W2.4 |
 | 5 | high | concurrency | [core/hy2/hy2.go:13](core/hy2/hy2.go#L13) | `Hy2nodes` map 无锁 → 并发读写 fatal | W2.1 |
 | 6 | high | security | [node/lego.go:149-166](node/lego.go#L149-L166) | ACME 私钥写为 0644 | W1.1 |
 | 7 | high | vulnerability | [core/xray/inbound.go:464-476](core/xray/inbound.go#L464-L476) | ObfsPassword JSON 注入 | W4.4 |
-| 8 | high | vulnerability | [core/xray/node.go:94-141](core/xray/node.go#L94-L141) | 面板可控自定义出站热加载 | **保留现状** §3.3 |
+| 8 | high | vulnerability | [core/xray/node.go:94-141](core/xray/node.go#L94-L141) | 面板可控自定义出站热加载 | W6 默认安全 + opt-in ([#9](https://github.com/Shannon-x/V2bX/pull/9)) — 见 §3.3 |
 | 9 | high | vulnerability | [conf/node.go:18-31,61-89](conf/node.go#L18-L89) | Include URL DNS rebinding SSRF + 无大小限制 | W4.1 |
 | 10 | high | bug | [core/hy2/logger.go:49-118](core/hy2/logger.go#L49-L118) | zap.Panic 在请求路径致整进程崩溃 | W1.3 |
 | 11 | high | bug | [core/hy2/config.go:84-90](core/hy2/config.go#L84-L90) | InitStreamReceiveWindow 永不生效（与 #2 同根） | W1.2 |
@@ -310,7 +344,7 @@ V2bX 在 `dev_new` 分支上对比 v2node 引入了多个本不存在的高危�
 | 28 | medium | concurrency | [core/xray/app/dispatcher/default.go:212-218](core/xray/app/dispatcher/default.go#L212-L218) | xray Counter Load+Store race | W2.5 |
 | 29 | medium | concurrency | [core/xray/app/dispatcher/default.go:195-203](core/xray/app/dispatcher/default.go#L195-L203) | LinkManagers 同上（CloseAll 丢失） | W2.5 |
 | 30 | medium | concurrency | [conf/watch.go:41-66](conf/watch.go#L41-L66) | watcher race 共享 `vc` | W2 模式 B |
-| 31 | medium | concurrency | [core/sing/user.go:113](core/sing/user.go#L113) | sing rebuildInbound 在全局锁下做长 I/O | W2.9 |
+| 31 | medium | concurrency | [core/sing/user.go:113](core/sing/user.go#L113) | sing rebuildInbound 在全局锁下做长 I/O | W6 per-tag 锁 ([#9](https://github.com/Shannon-x/V2bX/pull/9)) |
 | 32 | medium | concurrency | [core/sing/sing.go:37,99](core/sing/sing.go#L37) | sing inboundOptions 无锁 | W2.3 |
 | 33 | medium | concurrency | [core/sing/node.go:401,429,437](core/sing/node.go#L401) | sing nodeReportMinTrafficBytes 无锁 | W2.3 |
 | 34 | medium | concurrency | [core/xray/xray.go:39,53](core/xray/xray.go#L39) | xray nodeReportMinTrafficBytes 无锁 | W2.2 |
@@ -329,7 +363,7 @@ V2bX 在 `dev_new` 分支上对比 v2node 引入了多个本不存在的高危�
 | 47 | medium | performance | [node/controller.go:111-133](node/controller.go#L111-L133) | Controller.Close 未关 apiClient | W3.3 |
 | 48 | medium | concurrency | [core/hy2/hook.go:28-59](core/hy2/hook.go#L28-L59) | hy2 OverLimit 无同步 | W2.7 |
 | 49 | medium | performance | [api/panel/panel.go:35-101](api/panel/panel.go#L35-L101) | Transport 缺 HTTP/2/Proxy/超时 | W1.6 |
-| 50 | medium | vulnerability | [common/json5/json5.go:49-55](common/json5/json5.go#L49-L55) | prep() 无大小上限缓存 | W4.2 |
+| 50 | medium | vulnerability | [common/json5/json5.go:49-55](common/json5/json5.go#L49-L55) | prep() 无大小上限缓存 | W4 (caller-side) + W6 (prep-side, [#9](https://github.com/Shannon-x/V2bX/pull/9)) |
 | 51 | medium | vulnerability | [conf/node.go:18-31,64-73](conf/node.go#L18-L73) | Include 缺 ResponseHeaderTimeout/Content-Length 检查 | W4.1 |
 | 52 | medium | performance | [common/rate/conn.go:20,47-61](common/rate/conn.go#L20-L61) | 配置 Mbps 与实际吞吐定量偏差 | W3.5 |
 | 53 | low | performance | [core/xray/app/dispatcher/linkmanager.go:25-33](core/xray/app/dispatcher/linkmanager.go#L25-L33) | ManagedWriter 每次写 RLock | W3.8 |

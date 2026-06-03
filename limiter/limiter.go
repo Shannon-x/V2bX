@@ -216,11 +216,14 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 	if noSSUDP || l.NodeType == "hysteria2" {
 		aliveIp := l.getAliveIp(uid)
 
-		newipMap := new(sync.Map)
-		newipMap.Store(ip, uid)
-		// If any device is online
-		if v, loaded := l.UserOnlineIP.LoadOrStore(taguuid, newipMap); loaded {
-			oldipMap := v.(*sync.Map)
+		// W3.7 / audit #24: steady-state fast path — try Load first; only
+		// allocate the per-tag sync.Map on the very first connection for a
+		// given user. The previous code unconditionally allocated and
+		// discarded one per CheckLimit call (~5k connections/sec × 100k
+		// users = ~5k sync.Map heads per second wasted on GC).
+		var oldipMap *sync.Map
+		if v, ok := l.UserOnlineIP.Load(taguuid); ok {
+			oldipMap = v.(*sync.Map)
 			// If this is a new ip
 			if _, loaded2 := oldipMap.LoadOrStore(ip, uid); !loaded2 {
 				l.oldOnlineMu.RLock()
@@ -239,20 +242,41 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 				}
 			}
 		} else {
-			l.oldOnlineMu.RLock()
-			oldOnline := l.OldUserOnline
-			l.oldOnlineMu.RUnlock()
-
-			if v2, ok := oldOnline.Load(ip); ok {
-				if v2.(int) == uid {
-					oldOnline.Delete(ip)
+			// Cold path: first connection for this taguuid in this cycle.
+			newipMap := new(sync.Map)
+			newipMap.Store(ip, uid)
+			if v, loaded := l.UserOnlineIP.LoadOrStore(taguuid, newipMap); loaded {
+				// Lost the LoadOrStore race; reuse the winner and re-attempt
+				// the new-ip check against it.
+				oldipMap = v.(*sync.Map)
+				if _, loaded2 := oldipMap.LoadOrStore(ip, uid); !loaded2 {
+					l.oldOnlineMu.RLock()
+					oldOnline := l.OldUserOnline
+					l.oldOnlineMu.RUnlock()
+					if v2, loaded3 := oldOnline.Load(ip); loaded3 {
+						if v2.(int) == uid {
+							oldOnline.Delete(ip)
+						}
+					} else if deviceLimit > 0 {
+						if deviceLimit <= aliveIp {
+							oldipMap.Delete(ip)
+							return nil, true
+						}
+					}
 				}
 			} else {
-				if deviceLimit > 0 {
-					if deviceLimit <= aliveIp {
-						l.UserOnlineIP.Delete(taguuid)
-						return nil, true
+				// We won — newipMap is the canonical entry.
+				l.oldOnlineMu.RLock()
+				oldOnline := l.OldUserOnline
+				l.oldOnlineMu.RUnlock()
+
+				if v2, ok := oldOnline.Load(ip); ok {
+					if v2.(int) == uid {
+						oldOnline.Delete(ip)
 					}
+				} else if deviceLimit > 0 && deviceLimit <= aliveIp {
+					l.UserOnlineIP.Delete(taguuid)
+					return nil, true
 				}
 			}
 		}

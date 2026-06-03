@@ -26,6 +26,51 @@ func (v *V2bX) Authenticate(addr net.Addr, auth string, tx uint64) (ok bool, id 
 	return false, ""
 }
 
+// ReturnUserTraffic backfills traffic counters after a failed panel push.
+// W3.1 / audit #13: mirror of Xray.ReturnUserTraffic; see that for rationale.
+// hy2 keys per-user counters by UUID (h.Auth.usersMap is uuid -> uid).
+func (h *Hysteria2) ReturnUserTraffic(tag string, traffic []panel.UserTraffic) error {
+	if len(traffic) == 0 {
+		return nil
+	}
+	h.nodesMu.RLock()
+	node, ok := h.Hy2nodes[tag]
+	h.nodesMu.RUnlock()
+	if !ok {
+		return nil
+	}
+	hook, ok := node.TrafficLogger.(*HookServer)
+	if !ok {
+		return nil
+	}
+	v, ok := hook.Counter.Load(tag)
+	if !ok {
+		return nil
+	}
+	c := v.(*counter.TrafficCounter)
+
+	delta := make(map[int][2]int64, len(traffic))
+	for _, t := range traffic {
+		delta[t.UID] = [2]int64{t.Upload, t.Download}
+	}
+	h.Auth.mutex.RLock()
+	uidToUUID := make(map[int]string, len(h.Auth.usersMap))
+	for uuid, uid := range h.Auth.usersMap {
+		uidToUUID[uid] = uuid
+	}
+	h.Auth.mutex.RUnlock()
+	for uid, ud := range delta {
+		uuid, ok := uidToUUID[uid]
+		if !ok {
+			continue
+		}
+		ts := c.GetCounter(uuid)
+		ts.UpCounter.Add(ud[0])
+		ts.DownCounter.Add(ud[1])
+	}
+	return nil
+}
+
 func (h *Hysteria2) AddUsers(p *vCore.AddUsersParams) (added int, err error) {
 	h.Auth.mutex.Lock()
 	for _, user := range p.Users {

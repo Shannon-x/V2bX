@@ -11,9 +11,14 @@ import (
 type Task struct {
 	Name     string
 	Interval time.Duration
-	Execute  func() error
-	Reload   func()
-	access   sync.Mutex
+	// Execute is the legacy callback (no ctx). Use ExecuteCtx for new code so
+	// the watchdog timeout actually cancels the in-flight work (in particular
+	// the resty HTTP call) instead of merely leaking a goroutine holding the
+	// stalled response body. W3.2 / audit #25 #44.
+	Execute    func() error
+	ExecuteCtx func(ctx context.Context) error
+	Reload     func()
+	access     sync.Mutex
 
 	running bool
 	stop    chan struct{}
@@ -75,8 +80,11 @@ func (t *Task) Start(first bool) error {
 	return nil
 }
 
-// executeWithTimeout wraps Execute with a timeout to prevent goroutine leaks
-// when API calls hang. Matches v2node's ExecuteWithTimeout pattern.
+// executeWithTimeout wraps Execute / ExecuteCtx with a timeout to prevent
+// goroutine leaks when API calls hang. When ExecuteCtx is set, the timeout
+// ctx is propagated to the callback so resty (or any other I/O) can abort
+// the in-flight request — matching v2node's pattern and what audit #25 / #44
+// recommended.
 func (t *Task) executeWithTimeout() error {
 	timeout := 3 * t.Interval
 	if timeout > 5*time.Minute {
@@ -87,6 +95,10 @@ func (t *Task) executeWithTimeout() error {
 
 	done := make(chan error, 1)
 	go func() {
+		if t.ExecuteCtx != nil {
+			done <- t.ExecuteCtx(ctx)
+			return
+		}
 		done <- t.Execute()
 	}()
 

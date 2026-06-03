@@ -138,6 +138,41 @@ func (b *Sing) AddUsers(p *core.AddUsersParams) (added int, err error) {
 	return len(p.Users), nil
 }
 
+// ReturnUserTraffic backfills traffic counters after a failed panel push.
+// W3.1 / audit #13: mirror of Xray.ReturnUserTraffic; see that for rationale.
+// sing's per-user key is the raw UUID rather than the format.UserTag string,
+// hence the slightly different reverse-map walk.
+func (b *Sing) ReturnUserTraffic(tag string, traffic []panel.UserTraffic) error {
+	if len(traffic) == 0 {
+		return nil
+	}
+	v, ok := b.hookServer.counter.Load(tag)
+	if !ok {
+		return nil
+	}
+	c := v.(*counter.TrafficCounter)
+	delta := make(map[int][2]int64, len(traffic))
+	for _, t := range traffic {
+		delta[t.UID] = [2]int64{t.Upload, t.Download}
+	}
+	b.users.mapLock.RLock()
+	uidToUUID := make(map[int]string, len(b.users.uidMap))
+	for uuid, uid := range b.users.uidMap {
+		uidToUUID[uid] = uuid
+	}
+	b.users.mapLock.RUnlock()
+	for uid, ud := range delta {
+		uuid, ok := uidToUUID[uid]
+		if !ok {
+			continue
+		}
+		ts := c.GetCounter(uuid)
+		ts.UpCounter.Add(ud[0])
+		ts.DownCounter.Add(ud[1])
+	}
+	return nil
+}
+
 func (b *Sing) GetUserTraffic(tag, uuid string, reset bool) (up int64, down int64) {
 	if v, ok := b.hookServer.counter.Load(tag); ok {
 		c := v.(*counter.TrafficCounter)

@@ -99,22 +99,26 @@ func (c *Xray) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, conf
 
 // AddNodeCustomOutbounds loads panel-supplied raw outbound JSON.
 //
-// W6 / audit #8: the panel sits OUTSIDE the node's trust boundary. A
-// compromised panel can otherwise route every proxied flow through an
-// attacker-controlled SOCKS5/HTTP/VMess upstream, MITM-ing all TLS that
-// isn't end-to-end pinned. The defense is a deployer-controlled whitelist
-// (Options.CustomOutbound.AllowedProtocols) that defaults to the safe set
-// {freedom, blackhole} — these don't route to operator-controlled remotes,
-// so they can't be used to redirect traffic. Set AllowedProtocols=["*"] to
-// restore the pre-W6 behavior.
+// W6 / audit #8: DEFAULT IS PERMISSIVE — every panel-pushed outbound is
+// accepted (matches pre-W6 behavior; panel-driven routing is a core
+// V2bX feature). The CustomOutboundConfig is an OPTIONAL hardening knob
+// for multi-tenant deployers who don't fully trust the panel:
+//
+//   - omitted / nil                              → accept ALL (default)
+//   - Enabled=false                              → reject ALL
+//   - AllowedProtocols=["freedom","socks","..."] → accept only listed
+//   - AllowedProtocols=["*"]                     → accept ALL (explicit)
+//
+// AUDIT_REPORT §3.3 documents the trust-boundary reminder: an
+// unrestricted panel must be treated as node-root-equivalent.
 func (c *Xray) AddNodeCustomOutbounds(info *panel.NodeInfo, opts *conf.Options) error {
 	var cfg *conf.CustomOutboundConfig
 	if opts != nil {
 		cfg = opts.CustomOutbound
 	}
 	if !conf.IsCustomOutboundEnabled(cfg) {
-		// Explicit disable — count once per call, but only at debug level
-		// so the log isn't spammed if many nodes have it off.
+		// Explicit opt-out — log at debug to avoid spamming when many
+		// nodes have it off.
 		log.Debugf("Custom outbound loading disabled via config; skipping panel outbounds")
 		return nil
 	}
@@ -132,10 +136,12 @@ func (c *Xray) AddNodeCustomOutbounds(info *panel.NodeInfo, opts *conf.Options) 
 		// "freedom" / "socks" / "vmess".
 		proto := strings.ToLower(outbound.Protocol)
 		if !conf.IsCustomOutboundAllowed(cfg, proto) {
-			log.Warnf("Custom outbound %s rejected: protocol %q not in CustomOutbound.AllowedProtocols. "+
-				"To restore pre-W6 behavior set CustomOutbound.AllowedProtocols=[\"*\"] in node Options "+
-				"(see AUDIT_REPORT §3.3 for the security rationale).",
-				contextLabel, proto)
+			// Only reached when the deployer EXPLICITLY set a non-empty
+			// AllowedProtocols that doesn't include this proto — default
+			// config accepts everything.
+			log.Warnf("Custom outbound %s rejected: protocol %q not in CustomOutbound.AllowedProtocols=%v. "+
+				"Add %q to the list (or use [\"*\"]) to accept it.",
+				contextLabel, proto, cfg.AllowedProtocols, proto)
 			return
 		}
 		customConfig, err := outbound.Build()

@@ -99,6 +99,14 @@ func (c *Client) GetUserList() ([]UserInfo, error) {
 // Note: Xboard does not provide the /alivelist endpoint, so this will
 // gracefully return an empty map. The device_limit feature requires
 // panel support for this endpoint to function properly.
+//
+// W1.8 / audit #43: previously every failure path returned (emptyMap, nil),
+// indistinguishable from "panel returned no alive users". The caller would
+// then overwrite the live AliveList with empty, silently disabling device
+// limiting on transient errors. Now we return a real error on network /
+// transport failures; only HTTP-level "endpoint not implemented" (>=399)
+// and decode failures keep the empty-but-no-error semantics so unsupported
+// panels still work.
 func (c *Client) GetUserAlive() (map[int]int, error) {
 	c.AliveMap = &AliveMap{}
 	const path = "/api/v1/server/UniProxy/alivelist"
@@ -106,19 +114,22 @@ func (c *Client) GetUserAlive() (map[int]int, error) {
 		ForceContentType("application/json").
 		Get(path)
 	if err != nil {
-		c.AliveMap.Alive = make(map[int]int)
-		return c.AliveMap.Alive, nil
+		// Transport / network failure — propagate so the caller keeps the
+		// previous AliveList instead of nuking the device-limit state.
+		return nil, fmt.Errorf("get user alive: %w", err)
 	}
 	if r == nil || r.RawResponse == nil {
-		c.AliveMap.Alive = make(map[int]int)
-		return c.AliveMap.Alive, nil
+		return nil, fmt.Errorf("get user alive: nil response")
 	}
 	defer r.RawResponse.Body.Close()
 	if r.StatusCode() >= 399 {
+		// Endpoint may be unimplemented by the panel (Xboard). Treat as
+		// "feature unsupported" — empty map, no error.
 		c.AliveMap.Alive = make(map[int]int)
 		return c.AliveMap.Alive, nil
 	}
 	if err := json.Unmarshal(r.Body(), c.AliveMap); err != nil {
+		// Malformed body but reachable endpoint: log and degrade to empty.
 		logrus.WithField("err", err).Warn("unmarshal user alive list error, alivelist may not be supported by panel")
 		c.AliveMap.Alive = make(map[int]int)
 	}

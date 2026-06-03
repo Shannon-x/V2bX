@@ -508,8 +508,11 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 	outbounds := session.OutboundsFromContext(ctx)
 	ob := outbounds[len(outbounds)-1]
 
+	// W1.10 / audit #40: InboundFromContext can return nil if no inbound
+	// metadata was attached. Dereferencing sessionInbound.User would panic in
+	// a goroutine without recover and kill the process.
 	sessionInbound := session.InboundFromContext(ctx)
-	if sessionInbound.User != nil {
+	if sessionInbound != nil && sessionInbound.User != nil {
 		if l == nil {
 			var err error
 			l, err = limiter.GetLimiter(sessionInbound.Tag)

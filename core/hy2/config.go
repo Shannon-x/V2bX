@@ -86,7 +86,11 @@ func (n *Hysteria2node) getQUICConfig(config *serverConfig) (*server.QUICConfig,
 	} else if config.QUIC.InitStreamReceiveWindow < 16384 {
 		return nil, fmt.Errorf("QUICConfig.InitialStreamReceiveWindowf must be at least 16384")
 	} else {
-		quic.InitialConnectionReceiveWindow = config.QUIC.InitConnectionReceiveWindow
+		// W1.2 / audit #2 #11: field-name typo — was writing into
+		// InitialConnectionReceiveWindow from the wrong source, leaving the
+		// stream initial window at 0 (quic-go fallback ~512 KiB) regardless of
+		// operator configuration.
+		quic.InitialStreamReceiveWindow = config.QUIC.InitStreamReceiveWindow
 	}
 	if config.QUIC.MaxStreamReceiveWindow == 0 {
 		quic.MaxStreamReceiveWindow = defaultStreamReceiveWindow

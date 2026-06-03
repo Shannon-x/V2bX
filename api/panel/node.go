@@ -521,23 +521,45 @@ func (c *Client) GetNodeInfo() (node *NodeInfo, err error) {
 	return node, nil
 }
 
+// W1.11 / audit #46: panel-controlled push/pull intervals must be clamped.
+// A panel returning 0 (or anything below ~1s) turns the task loop into a
+// busy-loop and self-DoS's the node; absurdly large values just disable
+// reporting silently. These bounds protect both directions.
+const (
+	defaultIntervalSeconds = 60
+	minIntervalSeconds     = 10
+	maxIntervalSeconds     = 24 * 60 * 60 // 24h
+)
+
 func intervalToTime(i interface{}) time.Duration {
 	if i == nil {
-		return 60 * time.Second
+		return defaultIntervalSeconds * time.Second
 	}
+	var seconds int
 	switch v := i.(type) {
 	case int:
-		return time.Duration(v) * time.Second
+		seconds = v
 	case float64:
-		return time.Duration(v) * time.Second
+		seconds = int(v)
 	case string:
 		n, _ := strconv.Atoi(v)
-		return time.Duration(n) * time.Second
+		seconds = n
 	default:
 		rv := reflect.ValueOf(i)
 		if rv.CanInt() {
-			return time.Duration(rv.Int()) * time.Second
+			seconds = int(rv.Int())
+		} else {
+			seconds = defaultIntervalSeconds
 		}
-		return 60 * time.Second
 	}
+	if seconds <= 0 {
+		seconds = defaultIntervalSeconds
+	}
+	if seconds < minIntervalSeconds {
+		seconds = minIntervalSeconds
+	}
+	if seconds > maxIntervalSeconds {
+		seconds = maxIntervalSeconds
+	}
+	return time.Duration(seconds) * time.Second
 }

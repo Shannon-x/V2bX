@@ -49,7 +49,13 @@ var logFormatMap = map[string]zapcore.EncoderConfig{
 func (l *serverLogger) Connect(addr net.Addr, uuid string, tx uint64) {
 	limiterinfo, err := limiter.GetLimiter(l.Tag)
 	if err != nil {
-		l.logger.Panic("Get limiter error", zap.String("tag", l.Tag), zap.Error(err))
+		// W1.3 / audit #10: never panic in the request path. The hysteria
+		// stream goroutine has no recover, so a Panic here kills the entire
+		// V2bX process. A missing limiter (e.g. during DeleteLimiter →
+		// AddLimiter reload) is recoverable: log and skip the limit check.
+		l.logger.Warn("Get limiter error, skipping limit check", zap.String("tag", l.Tag), zap.Error(err))
+		l.logger.Info("client connected", zap.String("addr", addr.String()), zap.String("uuid", uuid), zap.Uint64("tx", tx))
+		return
 	}
 	if _, r := limiterinfo.CheckLimit(format.UserTag(l.Tag, uuid), extractIPFromAddr(addr), addr.Network() == "tcp", true); r {
 		if userLimit, ok := limiterinfo.UserLimitInfo.Load(format.UserTag(l.Tag, uuid)); ok {
@@ -70,7 +76,10 @@ func (l *serverLogger) Disconnect(addr net.Addr, uuid string, err error) {
 func (l *serverLogger) TCPRequest(addr net.Addr, uuid, reqAddr string) {
 	limiterinfo, err := limiter.GetLimiter(l.Tag)
 	if err != nil {
-		l.logger.Panic("Get limiter error", zap.String("tag", l.Tag), zap.Error(err))
+		// W1.3 / audit #10: log + skip; never panic in the request path.
+		l.logger.Warn("Get limiter error, skipping limit check", zap.String("tag", l.Tag), zap.Error(err))
+		l.logger.Debug("TCP request", zap.String("addr", addr.String()), zap.String("uuid", uuid), zap.String("reqAddr", reqAddr))
+		return
 	}
 	if _, r := limiterinfo.CheckLimit(format.UserTag(l.Tag, uuid), extractIPFromAddr(addr), addr.Network() == "tcp", true); r {
 		if userLimit, ok := limiterinfo.UserLimitInfo.Load(format.UserTag(l.Tag, uuid)); ok {
@@ -95,7 +104,10 @@ func (l *serverLogger) TCPError(addr net.Addr, uuid, reqAddr string, err error) 
 func (l *serverLogger) UDPRequest(addr net.Addr, uuid string, sessionId uint32, reqAddr string) {
 	limiterinfo, err := limiter.GetLimiter(l.Tag)
 	if err != nil {
-		l.logger.Panic("Get limiter error", zap.String("tag", l.Tag), zap.Error(err))
+		// W1.3 / audit #10: log + skip; never panic in the request path.
+		l.logger.Warn("Get limiter error, skipping limit check", zap.String("tag", l.Tag), zap.Error(err))
+		l.logger.Debug("UDP request", zap.String("addr", addr.String()), zap.String("uuid", uuid), zap.Uint32("sessionId", sessionId), zap.String("reqAddr", reqAddr))
+		return
 	}
 	if _, r := limiterinfo.CheckLimit(format.UserTag(l.Tag, uuid), extractIPFromAddr(addr), addr.Network() == "tcp", true); r {
 		if userLimit, ok := limiterinfo.UserLimitInfo.Load(format.UserTag(l.Tag, uuid)); ok {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/InazumaV/V2bX/api/panel"
 	"github.com/InazumaV/V2bX/common/format"
+	"github.com/sirupsen/logrus"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/proxy/shadowsocks"
@@ -13,9 +14,16 @@ import (
 )
 
 func buildSSUsers(tag string, userInfo []panel.UserInfo, cypher string, serverKey string) (users []*protocol.User) {
-	users = make([]*protocol.User, len(userInfo))
+	// W1.4 / audit #36: filter out users whose Uuid is too short for the
+	// SS2022 key length, otherwise buildSSUser would slice-panic and abort
+	// the entire AddUsers batch, leaving the inbound half-initialised.
+	users = make([]*protocol.User, 0, len(userInfo))
 	for i := range userInfo {
-		users[i] = buildSSUser(tag, &userInfo[i], cypher, serverKey)
+		u := buildSSUser(tag, &userInfo[i], cypher, serverKey)
+		if u == nil {
+			continue
+		}
+		users = append(users, u)
 	}
 	return users
 }
@@ -40,6 +48,17 @@ func buildSSUser(tag string, userInfo *panel.UserInfo, cypher string, serverKey 
 			keyLength = 32
 		case "2022-blake3-chacha20-poly1305":
 			keyLength = 32
+		}
+		// W1.4 / audit #36: guard against panel-supplied short UUIDs.
+		if len(userInfo.Uuid) < keyLength {
+			logrus.WithFields(logrus.Fields{
+				"tag":            tag,
+				"uuid":           userInfo.Uuid,
+				"cypher":         cypher,
+				"required_bytes": keyLength,
+				"actual_bytes":   len(userInfo.Uuid),
+			}).Warn("Shadowsocks 2022 user UUID shorter than required key length, skipping user")
+			return nil
 		}
 		ssAccount := &shadowsocks_2022.Account{
 			Key: base64.StdEncoding.EncodeToString([]byte(userInfo.Uuid[:keyLength])),

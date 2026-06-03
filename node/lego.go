@@ -159,8 +159,14 @@ func (l *Lego) writeCert(certificates *certificate.Resource) error {
 	if err != nil {
 		return fmt.Errorf("check path error: %s", err)
 	}
-	err = os.WriteFile(l.parseParams(l.config.KeyFile), certificates.PrivateKey, 0644)
+	// Private key: 0600 to prevent local-user disclosure (W1.1 / audit #6).
+	// Matches the convention used by self-signed key generation in cert.go.
+	err = os.WriteFile(l.parseParams(l.config.KeyFile), certificates.PrivateKey, 0600)
 	if err != nil {
+		return err
+	}
+	// Defensive chmod in case umask widened the WriteFile mode bits.
+	if err = os.Chmod(l.parseParams(l.config.KeyFile), 0600); err != nil {
 		return err
 	}
 	return nil

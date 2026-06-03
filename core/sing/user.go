@@ -8,6 +8,7 @@ import (
 	"github.com/InazumaV/V2bX/common/counter"
 	"github.com/InazumaV/V2bX/core"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sirupsen/logrus"
 )
 
 func (b *Sing) AddUsers(p *core.AddUsersParams) (added int, err error) {
@@ -50,10 +51,27 @@ func (b *Sing) AddUsers(p *core.AddUsersParams) (added int, err error) {
 		if o, ok := opts.(*option.ShadowsocksInboundOptions); ok {
 			for i := range p.Users {
 				var password = p.Users[i].Uuid
+				// W1.4 / audit #36: guard against panel-supplied short UUIDs
+				// before slicing — otherwise we panic in the AddUsers path
+				// and leave the inbound half-initialised.
 				switch p.Shadowsocks.Cipher {
 				case "2022-blake3-aes-128-gcm":
+					if len(password) < 16 {
+						logrus.WithFields(logrus.Fields{
+							"tag":  p.Tag,
+							"uuid": password,
+						}).Warn("Shadowsocks 2022 (aes-128) user UUID < 16 bytes, skipping")
+						continue
+					}
 					password = base64.StdEncoding.EncodeToString([]byte(password[:16]))
 				case "2022-blake3-aes-256-gcm":
+					if len(password) < 32 {
+						logrus.WithFields(logrus.Fields{
+							"tag":  p.Tag,
+							"uuid": password,
+						}).Warn("Shadowsocks 2022 (aes-256) user UUID < 32 bytes, skipping")
+						continue
+					}
 					password = base64.StdEncoding.EncodeToString([]byte(password[:32]))
 				}
 				o.Users = append(o.Users, option.ShadowsocksUser{

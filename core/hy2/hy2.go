@@ -61,8 +61,26 @@ func (h *Hysteria2) Type() string {
 	return "hysteria2"
 }
 
+// UpdateNodeReportMinTraffic refreshes the per-node minimum-traffic threshold
+// used to filter ReportUserTraffic payloads. Mirrors the Xray equivalent.
+//
+// W1.7 / audit #41: previously a no-op, so panel-driven threshold changes had
+// no effect on hysteria2 nodes until restart. Wave 2 will add a proper lock
+// around Hy2nodes; for now we tolerate the existing bare-map access pattern.
 func (h *Hysteria2) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, config *conf.Options) {
-	// no-op: hysteria2 core does not track per-node report thresholds
+	node, ok := h.Hy2nodes[tag]
+	if !ok {
+		return
+	}
+	hook, ok := node.TrafficLogger.(*HookServer)
+	if !ok {
+		return
+	}
+	reportMin := config.ReportMinTraffic
+	if info.NodeReportMinTraffic > 0 {
+		reportMin = int64(info.NodeReportMinTraffic)
+	}
+	hook.ReportMinTrafficBytes = reportMin * 1024
 }
 
 func (h *Hysteria2) AddNodeCustomOutbounds(info *panel.NodeInfo) error {

@@ -41,10 +41,15 @@ func New(c *conf.ApiConfig) (*Client, error) {
 	} else {
 		client = resty.New()
 	}
-	client.SetTransport(&http.Transport{
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
-	})
+	// W1.6 / audit #45 #49: clone the Go default Transport rather than
+	// replacing it. The previous bare &http.Transport{} silently disabled
+	// ForceAttemptHTTP2, Proxy (HTTPS_PROXY env), TLSHandshakeTimeout, and
+	// ExpectContinueTimeout. Clone preserves all of those and we only override
+	// the idle-pool tunables we actually want.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = 10
+	transport.IdleConnTimeout = 90 * time.Second
+	client.SetTransport(transport)
 	client.SetRetryCount(0)
 	if c.Timeout > 0 {
 		client.SetTimeout(time.Duration(c.Timeout) * time.Second)

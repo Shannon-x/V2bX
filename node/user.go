@@ -1,19 +1,34 @@
 package node
 
 import (
+	"context"
+
 	"github.com/InazumaV/V2bX/api/panel"
 	log "github.com/sirupsen/logrus"
 )
 
-func (c *Controller) reportUserTrafficTask() (err error) {
+func (c *Controller) reportUserTrafficTask(ctx context.Context) (err error) {
 	userTraffic, _ := c.server.GetUserTrafficSlice(c.tag, true)
 	if len(userTraffic) > 0 {
-		err = c.getAPIClient().ReportUserTraffic(userTraffic)
+		err = c.getAPIClient().ReportUserTrafficCtx(ctx, userTraffic)
 		if err != nil {
-			log.WithFields(log.Fields{
-				"tag": c.tag,
-				"err": err,
-			}).Info("Report user traffic failed")
+			// W3.1 / audit #13: GetUserTrafficSlice already swapped the
+			// counters to zero. Push failed, so add the deltas back on top
+			// of any traffic that accrued during the in-flight call —
+			// otherwise this period's accounting is lost forever and
+			// users effectively get free traffic on every panel hiccup.
+			if rerr := c.server.ReturnUserTraffic(c.tag, userTraffic); rerr != nil {
+				log.WithFields(log.Fields{
+					"tag": c.tag,
+					"err": rerr,
+				}).Warn("Failed to backfill traffic after report failure; some traffic accounting lost")
+			} else {
+				log.WithFields(log.Fields{
+					"tag":   c.tag,
+					"err":   err,
+					"users": len(userTraffic),
+				}).Info("Report user traffic failed; backfilled counters")
+			}
 		} else {
 			log.WithField("tag", c.tag).Infof("Report %d users traffic", len(userTraffic))
 			log.WithField("tag", c.tag).Debugf("User traffic: %+v", userTraffic)
@@ -47,7 +62,7 @@ func (c *Controller) reportUserTrafficTask() (err error) {
 		for _, onlineuser := range result {
 			data[onlineuser.UID] = append(data[onlineuser.UID], onlineuser.IP)
 		}
-		if err = c.getAPIClient().ReportNodeOnlineUsers(&data); err != nil {
+		if err = c.getAPIClient().ReportNodeOnlineUsersCtx(ctx, &data); err != nil {
 			log.WithFields(log.Fields{
 				"tag": c.tag,
 				"err": err,

@@ -3,52 +3,67 @@ package dispatcher
 import (
 	"io"
 	sync "sync"
+	"sync/atomic"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 )
 
+// ManagedWriter wraps a buf.Writer so dispatcher can close it on user-delete.
+//
+// W3.8 / audit #53: writer is replaced atomically rather than guarded by an
+// RWMutex. The hot path (WriteMultiBuffer) is hit on every MultiBuffer write
+// — at 10 Gbps that's ~830k writes/sec; each previously cost two atomic
+// operations from RLock/RUnlock. The new path is a single atomic Load.
+//
+// closeMu only protects the one-shot transition Close() makes (writer +
+// manager → nil, closed → true); the read side never takes it.
 type ManagedWriter struct {
-	mu      sync.RWMutex
-	writer  buf.Writer
+	writer  atomic.Pointer[bufWriterHolder]
 	manager *LinkManager
+	closeMu sync.Mutex
 	closed  bool
 }
 
+// bufWriterHolder wraps the interface value so it can be stored via
+// atomic.Pointer[T] (which requires T be a concrete type, not an interface).
+type bufWriterHolder struct {
+	w buf.Writer
+}
+
 func newManagedWriter(writer buf.Writer, manager *LinkManager) *ManagedWriter {
-	return &ManagedWriter{
-		writer:  writer,
-		manager: manager,
-	}
+	mw := &ManagedWriter{manager: manager}
+	mw.writer.Store(&bufWriterHolder{w: writer})
+	return mw
 }
 
 func (w *ManagedWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
-	w.mu.RLock()
-	writer := w.writer
-	w.mu.RUnlock()
-	if writer == nil {
+	h := w.writer.Load()
+	if h == nil || h.w == nil {
 		return io.ErrClosedPipe
 	}
-	return writer.WriteMultiBuffer(mb)
+	return h.w.WriteMultiBuffer(mb)
 }
 
 func (w *ManagedWriter) Close() error {
-	w.mu.Lock()
+	w.closeMu.Lock()
 	if w.closed {
-		w.mu.Unlock()
+		w.closeMu.Unlock()
 		return nil
 	}
 	w.closed = true
-	writer := w.writer
+	prev := w.writer.Swap(nil)
 	manager := w.manager
-	w.writer = nil
 	w.manager = nil
-	w.mu.Unlock()
+	w.closeMu.Unlock()
 
 	if manager != nil {
 		manager.RemoveWriter(w)
 	}
-	return common.Close(writer)
+	if prev != nil {
+		return common.Close(prev.w)
+	}
+	return nil
 }
 
 type LinkManager struct {

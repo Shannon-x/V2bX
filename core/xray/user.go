@@ -124,6 +124,44 @@ func (x *Xray) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 	return nil, nil
 }
 
+// ReturnUserTraffic backfills traffic counters after a failed panel push.
+// W3.1 / audit #13: reverses the Swap(0) done by GetUserTrafficSlice when
+// reset=true, so a failing ReportUserTraffic does not permanently lose the
+// period's accounting. atomic.Add preserves any concurrent traffic that
+// arrived between the failed push and the backfill.
+func (x *Xray) ReturnUserTraffic(tag string, traffic []panel.UserTraffic) error {
+	if len(traffic) == 0 {
+		return nil
+	}
+	v, ok := x.dispatcher.Counter.Load(tag)
+	if !ok {
+		return nil
+	}
+	c := v.(*counter.TrafficCounter)
+	// Build a UID -> (up, down) lookup once.
+	delta := make(map[int][2]int64, len(traffic))
+	for _, t := range traffic {
+		delta[t.UID] = [2]int64{t.Upload, t.Download}
+	}
+	// Reverse the uidMap (email -> uid) once; cheap for failure-only path.
+	x.users.mapLock.RLock()
+	uidToEmail := make(map[int]string, len(x.users.uidMap))
+	for email, uid := range x.users.uidMap {
+		uidToEmail[uid] = email
+	}
+	x.users.mapLock.RUnlock()
+	for uid, ud := range delta {
+		email, ok := uidToEmail[uid]
+		if !ok {
+			continue
+		}
+		ts := c.GetCounter(email)
+		ts.UpCounter.Add(ud[0])
+		ts.DownCounter.Add(ud[1])
+	}
+	return nil
+}
+
 func (c *Xray) AddUsers(p *vCore.AddUsersParams) (added int, err error) {
 	c.users.mapLock.Lock()
 	defer c.users.mapLock.Unlock()

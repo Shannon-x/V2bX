@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -32,10 +33,17 @@ type AliveMap struct {
 	Alive map[int]int `json:"alive"`
 }
 
-// GetUserList will pull user from v2board
+// GetUserList will pull user from v2board.
 func (c *Client) GetUserList() ([]UserInfo, error) {
+	return c.GetUserListCtx(context.Background())
+}
+
+// GetUserListCtx is the ctx-aware variant used by the task framework.
+// W3.2 / W3.4 / audit #25 #44.
+func (c *Client) GetUserListCtx(ctx context.Context) ([]UserInfo, error) {
 	const path = "/api/v1/server/UniProxy/user"
 	r, err := c.client.R().
+		SetContext(ctx).
 		SetHeader("If-None-Match", c.userEtag).
 		SetHeader("X-Response-Format", "msgpack").
 		SetDoNotParseResponse(true).
@@ -108,9 +116,15 @@ func (c *Client) GetUserList() ([]UserInfo, error) {
 // and decode failures keep the empty-but-no-error semantics so unsupported
 // panels still work.
 func (c *Client) GetUserAlive() (map[int]int, error) {
+	return c.GetUserAliveCtx(context.Background())
+}
+
+// GetUserAliveCtx is the ctx-aware variant. W3.2 / W3.4.
+func (c *Client) GetUserAliveCtx(ctx context.Context) (map[int]int, error) {
 	c.AliveMap = &AliveMap{}
 	const path = "/api/v1/server/UniProxy/alivelist"
 	r, err := c.client.R().
+		SetContext(ctx).
 		ForceContentType("application/json").
 		Get(path)
 	if err != nil {
@@ -143,14 +157,20 @@ type UserTraffic struct {
 	Download int64
 }
 
-// ReportUserTraffic reports the user traffic
+// ReportUserTraffic reports the user traffic.
 func (c *Client) ReportUserTraffic(userTraffic []UserTraffic) error {
+	return c.ReportUserTrafficCtx(context.Background(), userTraffic)
+}
+
+// ReportUserTrafficCtx is the ctx-aware variant. W3.2 / W3.4.
+func (c *Client) ReportUserTrafficCtx(ctx context.Context, userTraffic []UserTraffic) error {
 	data := make(map[int][]int64, len(userTraffic))
 	for i := range userTraffic {
 		data[userTraffic[i].UID] = []int64{userTraffic[i].Upload, userTraffic[i].Download}
 	}
 	const path = "/api/v1/server/UniProxy/push"
 	r, err := c.client.R().
+		SetContext(ctx).
 		SetBody(data).
 		ForceContentType("application/json").
 		Post(path)
@@ -162,8 +182,14 @@ func (c *Client) ReportUserTraffic(userTraffic []UserTraffic) error {
 }
 
 func (c *Client) ReportNodeOnlineUsers(data *map[int][]string) error {
+	return c.ReportNodeOnlineUsersCtx(context.Background(), data)
+}
+
+// ReportNodeOnlineUsersCtx is the ctx-aware variant. W3.2 / W3.4.
+func (c *Client) ReportNodeOnlineUsersCtx(ctx context.Context, data *map[int][]string) error {
 	const path = "/api/v1/server/UniProxy/alive"
 	r, err := c.client.R().
+		SetContext(ctx).
 		SetBody(data).
 		ForceContentType("application/json").
 		Post(path)

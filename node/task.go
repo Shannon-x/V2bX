@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"time"
 
 	"github.com/InazumaV/V2bX/api/panel"
@@ -11,18 +12,20 @@ import (
 
 func (c *Controller) startTasks(node *panel.NodeInfo) {
 	// fetch node info task
+	// W3.2 / W3.4: use ExecuteCtx so the watchdog timeout actually cancels
+	// the in-flight resty calls instead of leaking the goroutine.
 	c.nodeInfoMonitorPeriodic = &task.Task{
-		Name:     "nodeInfoMonitor",
-		Interval: node.PullInterval,
-		Execute:  c.nodeInfoMonitor,
-		Reload:   c.reloadAPIClient,
+		Name:       "nodeInfoMonitor",
+		Interval:   node.PullInterval,
+		ExecuteCtx: c.nodeInfoMonitor,
+		Reload:     c.reloadAPIClient,
 	}
 	// fetch user list task
 	c.userReportPeriodic = &task.Task{
-		Name:     "reportUserTrafficTask",
-		Interval: node.PushInterval,
-		Execute:  c.reportUserTrafficTask,
-		Reload:   c.reloadAPIClient,
+		Name:       "reportUserTrafficTask",
+		Interval:   node.PushInterval,
+		ExecuteCtx: c.reportUserTrafficTask,
+		Reload:     c.reloadAPIClient,
 	}
 	log.WithField("tag", c.tag).Info("Start monitor node status")
 	// delay to start nodeInfoMonitor
@@ -51,18 +54,19 @@ func (c *Controller) startTasks(node *panel.NodeInfo) {
 		c.traffic = make(map[string]int64)
 		c.trafficMu.Unlock()
 		c.dynamicSpeedLimitPeriodic = &task.Task{
-			Name:     "dynamicSpeedLimitTask",
-			Interval: time.Duration(c.LimitConfig.DynamicSpeedLimitConfig.Periodic) * time.Second,
-			Execute:  c.SpeedChecker,
+			Name:       "dynamicSpeedLimitTask",
+			Interval:   time.Duration(c.LimitConfig.DynamicSpeedLimitConfig.Periodic) * time.Second,
+			ExecuteCtx: c.SpeedChecker,
 		}
 		log.Printf("[%s: %d] Start dynamic speed limit", c.getAPIClient().NodeType, c.getAPIClient().NodeId)
 	}
 }
 
-func (c *Controller) nodeInfoMonitor() (err error) {
+func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 	api := c.getAPIClient()
-	// get node info
-	newN, err := api.GetNodeInfo()
+	// get node info — W3.4: ctx propagates the task watchdog deadline so an
+	// unresponsive panel can't hang the three serial requests indefinitely.
+	newN, err := api.GetNodeInfoCtx(ctx)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"tag": c.tag,
@@ -72,7 +76,7 @@ func (c *Controller) nodeInfoMonitor() (err error) {
 	}
 
 	// get user info
-	newU, err := api.GetUserList()
+	newU, err := api.GetUserListCtx(ctx)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"tag": c.tag,
@@ -82,7 +86,7 @@ func (c *Controller) nodeInfoMonitor() (err error) {
 	}
 
 	// get user alive
-	newA, err := api.GetUserAlive()
+	newA, err := api.GetUserAliveCtx(ctx)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"tag": c.tag,
@@ -204,7 +208,7 @@ func (c *Controller) nodeInfoMonitor() (err error) {
 	return nil
 }
 
-func (c *Controller) SpeedChecker() error {
+func (c *Controller) SpeedChecker(_ context.Context) error {
 	// W2.4: snapshot keys under trafficMu so we can release the lock before
 	// the (potentially slow) UpdateDynamicSpeedLimit call. Concurrent
 	// nodeInfoMonitor / startTasks reinitialisation are now safe.

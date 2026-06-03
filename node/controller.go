@@ -138,6 +138,13 @@ func (c *Controller) Close() error {
 	if err != nil {
 		return fmt.Errorf("del node error: %s", err)
 	}
+	// W3.3 / audit #47 #55: close the panel HTTP client so idle TLS
+	// connections (10 per host × 90s) don't leak across reloads.
+	c.apiMutex.Lock()
+	if c.apiClient != nil {
+		c.apiClient.Close()
+	}
+	c.apiMutex.Unlock()
 	return nil
 }
 

@@ -1,8 +1,6 @@
 package rate
 
 import (
-	"time"
-
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 )
@@ -28,9 +26,13 @@ func (w *Writer) Interrupt() {
 }
 
 func (w *Writer) WriteMultiBuffer(mb buf.MultiBuffer) error {
-	limiter := w.limiter.Get()
-	if limiter != nil {
-		limiter.WaitMaxDuration(int64(mb.Len()), 5*time.Second)
+	// W3.5 / audit #19 #20 #21: charge tokens BEFORE the write, with a plain
+	// Wait that actually blocks (the previous WaitMaxDuration silently let
+	// traffic through whenever the wait exceeded its 5s cap).
+	if limiter := w.limiter.Get(); limiter != nil {
+		if n := int64(mb.Len()); n > 0 {
+			limiter.Wait(n)
+		}
 	}
 	return w.writer.WriteMultiBuffer(mb)
 }

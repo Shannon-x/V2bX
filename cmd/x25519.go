@@ -33,9 +33,19 @@ func executeX25519() {
 	var privateKey []byte
 	var publicKey []byte
 	var yes, key string
-	fmt.Println("要基于节点信息生成密钥吗?(Y/n)")
+	// W4.5 / audit #37: default to a cryptographically random private key.
+	// The previous default ("Y") derived the key from (node_id || type ||
+	// token) — two nodes sharing those inputs got the SAME private key, and
+	// any token leak let an attacker reconstruct private keys offline,
+	// breaking Reality TLS handshake secrecy. We keep the derivation mode
+	// available behind an explicit opt-in for users who need reproducible
+	// keys, but warn loudly.
+	fmt.Println("是否基于节点信息派生密钥? (y / N, 默认 N = 随机生成 — 推荐)")
+	fmt.Println("  ⚠️  派生模式安全性较弱: 任何获得 (node_id, node_type, token) 三元组的人都可重现私钥.")
+	fmt.Println("      仅在确实需要可复现密钥时选 y, 并请妥善保护 token.")
 	fmt.Scan(&yes)
 	if strings.ToLower(yes) == "y" {
+		fmt.Println("⚠️  正在使用派生模式 — 请确保上游 token 妥善保管!")
 		var temp string
 		fmt.Println("请输入节点id:")
 		fmt.Scan(&temp)

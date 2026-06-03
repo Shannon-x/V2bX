@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 
 	"github.com/InazumaV/V2bX/common/format"
@@ -16,6 +17,15 @@ import (
 	"github.com/sagernet/sing-box/log"
 	N "github.com/sagernet/sing/common/network"
 )
+
+// safeUserField escapes panel-supplied identifiers (typically the user UUID)
+// before they appear in a log line. W4.6 / audit #58: a UUID containing
+// newline / ANSI / control bytes could otherwise spoof an entire log line.
+// strconv.Quote escapes the lot and adds surrounding quotes so the field
+// is also unambiguous in log parsing.
+func safeUserField(s string) string {
+	return strconv.Quote(s)
+}
 
 var _ adapter.ConnectionTracker = (*HookServer)(nil)
 
@@ -43,7 +53,7 @@ func (h *HookServer) RoutedConnection(_ context.Context, conn net.Conn, m adapte
 	ip := m.Source.Addr.String()
 	if db, r := l.CheckLimit(taguuid, ip, true, true); r {
 		conn.Close()
-		log.Error("[", m.Inbound, "] ", "Limited ", m.User, " by ip or conn")
+		log.Error("[", m.Inbound, "] ", "Limited ", safeUserField(m.User), " by ip or conn")
 		return conn
 	} else if db != nil {
 		conn = rate.NewConnRateLimiter(conn, db)
@@ -54,7 +64,7 @@ func (h *HookServer) RoutedConnection(_ context.Context, conn net.Conn, m adapte
 		if l.CheckDomainRule(destStr) {
 			log.Error(fmt.Sprintf(
 				"User %s access domain %s reject by rule",
-				m.User,
+				safeUserField(m.User),
 				destStr))
 			conn.Close()
 			return conn
@@ -65,7 +75,7 @@ func (h *HookServer) RoutedConnection(_ context.Context, conn net.Conn, m adapte
 			if l.CheckIPRule(ipStr) {
 				log.Error(fmt.Sprintf(
 					"User %s access IP %s reject by rule",
-					m.User,
+					safeUserField(m.User),
 					ipStr))
 				conn.Close()
 				return conn
@@ -75,7 +85,7 @@ func (h *HookServer) RoutedConnection(_ context.Context, conn net.Conn, m adapte
 		if l.CheckPortRule(int(m.Destination.Port)) {
 			log.Error(fmt.Sprintf(
 				"User %s access port %d reject by rule",
-				m.User,
+				safeUserField(m.User),
 				m.Destination.Port))
 			conn.Close()
 			return conn
@@ -84,7 +94,7 @@ func (h *HookServer) RoutedConnection(_ context.Context, conn net.Conn, m adapte
 			if l.CheckProtocolRule(protocol) {
 				log.Error(fmt.Sprintf(
 					"User %s access protocol %s reject by rule",
-					m.User,
+					safeUserField(m.User),
 					protocol))
 				conn.Close()
 				return conn
@@ -117,7 +127,7 @@ func (h *HookServer) RoutedPacketConnection(_ context.Context, conn N.PacketConn
 	taguuid := format.UserTag(m.Inbound, m.User)
 	if db, r := l.CheckLimit(taguuid, ip, false, false); r {
 		conn.Close()
-		log.Error("[", m.Inbound, "] ", "Limited ", m.User, " by ip or conn")
+		log.Error("[", m.Inbound, "] ", "Limited ", safeUserField(m.User), " by ip or conn")
 		return conn
 	} else if db != nil {
 		//conn = rate.NewPacketConnCounter(conn, db)
@@ -128,7 +138,7 @@ func (h *HookServer) RoutedPacketConnection(_ context.Context, conn N.PacketConn
 		if l.CheckDomainRule(destStr) {
 			log.Error(fmt.Sprintf(
 				"User %s access domain %s reject by rule",
-				m.User,
+				safeUserField(m.User),
 				destStr))
 			conn.Close()
 			return conn
@@ -139,7 +149,7 @@ func (h *HookServer) RoutedPacketConnection(_ context.Context, conn N.PacketConn
 			if l.CheckIPRule(ipStr) {
 				log.Error(fmt.Sprintf(
 					"User %s access IP %s reject by rule",
-					m.User,
+					safeUserField(m.User),
 					ipStr))
 				conn.Close()
 				return conn
@@ -149,7 +159,7 @@ func (h *HookServer) RoutedPacketConnection(_ context.Context, conn N.PacketConn
 		if l.CheckPortRule(int(m.Destination.Port)) {
 			log.Error(fmt.Sprintf(
 				"User %s access port %d reject by rule",
-				m.User,
+				safeUserField(m.User),
 				m.Destination.Port))
 			conn.Close()
 			return conn
@@ -158,7 +168,7 @@ func (h *HookServer) RoutedPacketConnection(_ context.Context, conn N.PacketConn
 			if l.CheckProtocolRule(protocol) {
 				log.Error(fmt.Sprintf(
 					"User %s access protocol %s reject by rule",
-					m.User,
+					safeUserField(m.User),
 					protocol))
 				conn.Close()
 				return conn

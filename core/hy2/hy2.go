@@ -105,7 +105,8 @@ func (h *Hysteria2) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo,
 	hook.ReportMinTrafficBytes.Store(reportMin * 1024)
 }
 
-func (h *Hysteria2) AddNodeCustomOutbounds(info *panel.NodeInfo) error {
+func (h *Hysteria2) AddNodeCustomOutbounds(info *panel.NodeInfo, opts *conf.Options) error {
 	// Not supported for hysteria2 currently, quietly ignore.
+	_ = opts
 	return nil
 }

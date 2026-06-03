@@ -118,7 +118,7 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 		}
 
 		// Update custom outbounds dynamically
-		if err = c.server.AddNodeCustomOutbounds(newN); err != nil {
+		if err = c.server.AddNodeCustomOutbounds(newN, c.Options); err != nil {
 			log.WithFields(log.Fields{
 				"tag": c.tag,
 				"err": err,

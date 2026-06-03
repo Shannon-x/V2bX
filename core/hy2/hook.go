@@ -50,12 +50,19 @@ func (h *HookServer) LogTraffic(id string, tx, rx uint64) (ok bool) {
 		}
 	}
 
-	// W2.5 / audit #22 #42 #56: LoadOrStore eliminates the Load+Store race that
-	// allowed two concurrent first-traffic events to each construct a counter,
-	// register it, and lose one to GC — the loser's recorded traffic vanished.
-	actual, _ := h.Counter.LoadOrStore(h.Tag, counter.NewTrafficCounter())
-	tc, ok := actual.(*counter.TrafficCounter)
-	if !ok {
+	// W2.5 / W6 / audit #22 #42 #56 / B1: Load-first fast path; LoadOrStore
+	// (with a pre-allocated NewTrafficCounter) only on cold miss. Steady
+	// state allocates nothing — previously every LogTraffic call alloc'd
+	// a TrafficCounter that was immediately GC'd when LoadOrStore returned
+	// the already-stored value.
+	var tc *counter.TrafficCounter
+	if v, ok := h.Counter.Load(h.Tag); ok {
+		tc, _ = v.(*counter.TrafficCounter)
+	} else {
+		actual, _ := h.Counter.LoadOrStore(h.Tag, counter.NewTrafficCounter())
+		tc, _ = actual.(*counter.TrafficCounter)
+	}
+	if tc == nil {
 		return false
 	}
 	tc.Rx(id, int(rx))

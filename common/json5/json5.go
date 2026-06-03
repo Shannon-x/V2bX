@@ -2,12 +2,19 @@ package json5
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 )
 
+// DefaultMaxBytes is the safety ceiling enforced by prep when the caller
+// does not supply a tighter bound via NewTrimNodeReaderLimit. 64 MiB is
+// far above any sane config file but well below an OOM threshold.
+const DefaultMaxBytes = int64(64 << 20)
+
 type TrimNodeReader struct {
-	r  io.Reader
-	br *bytes.Reader
+	r   io.Reader
+	br  *bytes.Reader
+	max int64 // 0 means "use DefaultMaxBytes"
 }
 
 func isNL(c byte) bool {
@@ -46,13 +53,24 @@ func consumeComment(s []byte, i int) int {
 	return i
 }
 
-func prep(r io.Reader) (s []byte, err error) {
-	buf := &bytes.Buffer{}
-	_, err = io.Copy(buf, r)
-	s = buf.Bytes()
-	if err != nil {
-		return
+// W6 / audit #50 后半: enforce a size ceiling so a runaway local file (or
+// a panel-controlled Include URL that somehow slipped past the caller's
+// own limit) cannot OOM the process with a 1 GiB payload.
+func prep(r io.Reader, max int64) (s []byte, err error) {
+	if max <= 0 {
+		max = DefaultMaxBytes
 	}
+	buf := &bytes.Buffer{}
+	// LimitReader returns EOF at max+1 bytes; we read max+1 then check
+	// whether the source actually ended (acceptable) or got truncated.
+	n, err := io.Copy(buf, io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if n > max {
+		return nil, fmt.Errorf("json5: input exceeds %d bytes (size cap)", max)
+	}
+	s = buf.Bytes()
 
 	i := 0
 	for i < len(s) {
@@ -98,7 +116,7 @@ func prep(r io.Reader) (s []byte, err error) {
 func (st *TrimNodeReader) Read(p []byte) (n int, err error) {
 	if st.br == nil {
 		var s []byte
-		if s, err = prep(st.r); err != nil {
+		if s, err = prep(st.r, st.max); err != nil {
 			return
 		}
 		st.br = bytes.NewReader(s)
@@ -106,7 +124,17 @@ func (st *TrimNodeReader) Read(p []byte) (n int, err error) {
 	return st.br.Read(p)
 }
 
-// NewTrimNodeReader New returns an io.Reader acting as proxy to r
+// NewTrimNodeReader returns an io.Reader acting as proxy to r. A
+// DefaultMaxBytes safety cap is enforced on the underlying read; use
+// NewTrimNodeReaderLimit for a tighter or looser bound.
 func NewTrimNodeReader(r io.Reader) io.Reader {
 	return &TrimNodeReader{r: r}
+}
+
+// NewTrimNodeReaderLimit is the size-capped variant. max <= 0 means
+// "use DefaultMaxBytes"; pass an explicit value for paths where the
+// caller knows the realistic upper bound (e.g. 8 MiB for Include URLs).
+// W6 / audit #50.
+func NewTrimNodeReaderLimit(r io.Reader, max int64) io.Reader {
+	return &TrimNodeReader{r: r, max: max}
 }

@@ -28,7 +28,11 @@ type Core interface {
 	ReturnUserTraffic(tag string, traffic []panel.UserTraffic) error
 	DelUsers(users []panel.UserInfo, tag string, info *panel.NodeInfo) error
 	UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, config *conf.Options)
-	AddNodeCustomOutbounds(info *panel.NodeInfo) error
+	// AddNodeCustomOutbounds loads panel-supplied raw outbound JSON, filtered
+	// by the deployer-controlled CustomOutbound policy in `opts`. W6 / audit
+	// #8: `opts` was added so the implementation can consult the trust
+	// boundary instead of blindly accepting every panel push.
+	AddNodeCustomOutbounds(info *panel.NodeInfo, opts *conf.Options) error
 	Protocols() []string
 	Type() string
 }

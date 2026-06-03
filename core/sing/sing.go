@@ -42,6 +42,24 @@ type Sing struct {
 	optsMu                    sync.RWMutex
 	nodeReportMinTrafficBytes map[string]int64
 	inboundOptions            map[string]any // tag -> inbound options, for rebuild on user change
+
+	// W2.9 / W6 / audit #31: per-tag mutex so AddUsers/DelUsers/rebuildInbound
+	// for tag A doesn't block tag B's user updates. The previous design held
+	// b.users.mapLock (a global lock) for the entire rebuildInbound call,
+	// which involves sing-box level listener teardown + recreate — easily
+	// hundreds of ms on a busy node, and entirely blocking for the duration.
+	tagLocks sync.Map // map[string]*sync.Mutex
+}
+
+// tagMutex returns the per-tag serialization mutex, allocating on first use.
+// Callers MUST Lock/Unlock the returned mutex around any code path that
+// mutates that tag's inboundOptions or rebuilds the inbound.
+func (b *Sing) tagMutex(tag string) *sync.Mutex {
+	if v, ok := b.tagLocks.Load(tag); ok {
+		return v.(*sync.Mutex)
+	}
+	v, _ := b.tagLocks.LoadOrStore(tag, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 type UserMap struct {
@@ -132,8 +150,9 @@ func (b *Sing) Type() string {
 	return "sing"
 }
 
-func (b *Sing) AddNodeCustomOutbounds(info *panel.NodeInfo) error {
+func (b *Sing) AddNodeCustomOutbounds(info *panel.NodeInfo, opts *conf.Options) error {
 	// Not supported for sing-box currently, quietly ignore.
+	_ = opts
 	return nil
 }
 

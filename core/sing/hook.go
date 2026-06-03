@@ -101,12 +101,15 @@ func (h *HookServer) RoutedConnection(_ context.Context, conn net.Conn, m adapte
 			}
 		}
 	}
-	// W2.5 / audit #23 #57: LoadOrStore eliminates the Load+Store race that
-	// allowed two concurrent first-connection events on the same inbound to
-	// each construct a TrafficCounter and have one orphaned (its recorded
-	// traffic invisible to subsequent reads).
-	actual, _ := h.counter.LoadOrStore(m.Inbound, counter.NewTrafficCounter())
-	t := actual.(*counter.TrafficCounter)
+	// W2.5 / W6 / audit #23 #57 / B1: Load-first; LoadOrStore alloc only on
+	// cold miss. Eliminates one heap alloc per connection in steady state.
+	var t *counter.TrafficCounter
+	if v, ok := h.counter.Load(m.Inbound); ok {
+		t = v.(*counter.TrafficCounter)
+	} else {
+		actual, _ := h.counter.LoadOrStore(m.Inbound, counter.NewTrafficCounter())
+		t = actual.(*counter.TrafficCounter)
+	}
 	conn = counter.NewConnCounter(conn, t.GetCounter(m.User))
 	return conn
 }
@@ -175,9 +178,15 @@ func (h *HookServer) RoutedPacketConnection(_ context.Context, conn N.PacketConn
 			}
 		}
 	}
-	// W2.5 / audit #23 #57: same LoadOrStore fix as for TCP.
-	actual, _ := h.counter.LoadOrStore(m.Inbound, counter.NewTrafficCounter())
-	t := actual.(*counter.TrafficCounter)
+	// W2.5 / W6 / audit #23 #57 / B1: Load-first; LoadOrStore alloc only on
+	// cold miss (same as TCP path).
+	var t *counter.TrafficCounter
+	if v, ok := h.counter.Load(m.Inbound); ok {
+		t = v.(*counter.TrafficCounter)
+	} else {
+		actual, _ := h.counter.LoadOrStore(m.Inbound, counter.NewTrafficCounter())
+		t = actual.(*counter.TrafficCounter)
+	}
 	conn = counter.NewPacketConnCounter(conn, t.GetCounter(m.User))
 	return conn
 }

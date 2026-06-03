@@ -16,11 +16,22 @@ func (b *Sing) AddUsers(p *core.AddUsersParams) (added int, err error) {
 	if !found {
 		return 0, errors.New("the inbound not found")
 	}
+	// W2.9 / W6: serialize same-tag mutations with a per-tag mutex. The
+	// previous global b.users.mapLock blocked EVERY tag's AddUsers/DelUsers
+	// for the duration of one tag's rebuildInbound (which can be hundreds
+	// of ms). Now: uidMap updates take mapLock briefly, opts read/mutate +
+	// rebuildInbound run under tagMu — same-tag stays serial, different
+	// tags proceed in parallel.
+	tagMu := b.tagMutex(p.Tag)
+	tagMu.Lock()
+	defer tagMu.Unlock()
+
 	b.users.mapLock.Lock()
-	defer b.users.mapLock.Unlock()
 	for i := range p.Users {
 		b.users.uidMap[p.Users[i].Uuid] = p.Users[i].Id
 	}
+	b.users.mapLock.Unlock()
+
 	// Get existing inbound options to rebuild with new users
 	// W2.3: read under optsMu to coordinate with AddNode/DelNode.
 	b.optsMu.RLock()
@@ -198,9 +209,9 @@ func (b *Sing) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 	b.optsMu.RUnlock()
 	if v, ok := hook.counter.Load(tag); ok {
 		c := v.(*counter.TrafficCounter)
-		c.Counters.Range(func(key, value interface{}) bool {
-			uuid := key.(string)
-			traffic := value.(*counter.TrafficStorage)
+		// W6 / B3: iterate dirty set only — see xray equivalent.
+		walk := func(uuidKey string, traffic *counter.TrafficStorage) bool {
+			uuid := uuidKey
 			var up, down int64
 			if reset {
 				up = traffic.UpCounter.Swap(0)
@@ -233,7 +244,8 @@ func (b *Sing) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 				}
 			}
 			return true
-		})
+		}
+		c.IterateDirty(reset, walk)
 		if len(trafficSlice) == 0 {
 			return nil, nil
 		}
@@ -247,19 +259,26 @@ func (b *Sing) DelUsers(users []panel.UserInfo, tag string, info *panel.NodeInfo
 	if !found {
 		return errors.New("the inbound not found")
 	}
-	b.users.mapLock.Lock()
-	defer b.users.mapLock.Unlock()
+	// W2.9 / W6: per-tag lock (same rationale as AddUsers).
+	tagMu := b.tagMutex(tag)
+	tagMu.Lock()
+	defer tagMu.Unlock()
 
-	// Clean up traffic counters
+	// Clean up traffic counters (counter is sync.Map — no lock needed).
 	deleteUUIDs := make(map[string]struct{}, len(users))
 	for i := range users {
 		if v, ok := b.hookServer.counter.Load(tag); ok {
 			c := v.(*counter.TrafficCounter)
 			c.Delete(users[i].Uuid)
 		}
-		delete(b.users.uidMap, users[i].Uuid)
 		deleteUUIDs[users[i].Uuid] = struct{}{}
 	}
+	// uidMap mutation under mapLock — narrow scope only.
+	b.users.mapLock.Lock()
+	for i := range users {
+		delete(b.users.uidMap, users[i].Uuid)
+	}
+	b.users.mapLock.Unlock()
 
 	// Remove users from inbound options
 	// W2.3: read under optsMu.

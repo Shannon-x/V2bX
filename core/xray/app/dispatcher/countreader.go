@@ -14,6 +14,18 @@ var _ buf.TimeoutReader = (*CounterReader)(nil)
 type CounterReader struct {
 	Reader  buf.TimeoutReader
 	Counter *atomic.Int64
+	// W6 / B3: optional dirty-marker so GetUserTrafficSlice can iterate
+	// only active users (via TrafficCounter.IterateDirty) instead of the
+	// full Counters sync.Map every report period. When unset the wrapper
+	// behaves exactly as before.
+	Parent *counter.TrafficCounter
+	UUID   string
+}
+
+func (c *CounterReader) markDirty() {
+	if c.Parent != nil && c.UUID != "" {
+		c.Parent.MarkDirty(c.UUID)
+	}
 }
 
 // ReadMultiBufferTimeout forwards the caller-supplied timeout to the underlying
@@ -26,6 +38,7 @@ func (c *CounterReader) ReadMultiBufferTimeout(timeout time.Duration) (buf.Multi
 	}
 	if mb.Len() > 0 {
 		c.Counter.Add(int64(mb.Len()))
+		c.markDirty()
 	}
 	return mb, nil
 }
@@ -37,6 +50,7 @@ func (c *CounterReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	}
 	if mb.Len() > 0 {
 		c.Counter.Add(int64(mb.Len()))
+		c.markDirty()
 	}
 	return mb, nil
 }
@@ -52,11 +66,21 @@ func (c *CounterReader) Interrupt() {
 type SizeStatWriter struct {
 	Counter *counter.XrayTrafficCounter
 	Writer  buf.Writer
+	// W6 / B3: optional dirty-marker — see CounterReader for rationale.
+	Parent *counter.TrafficCounter
+	UUID   string
+}
+
+func (w *SizeStatWriter) markDirty() {
+	if w.Parent != nil && w.UUID != "" {
+		w.Parent.MarkDirty(w.UUID)
+	}
 }
 
 func (w *SizeStatWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 	if mb != nil && mb.Len() > 0 {
 		w.Counter.V.Add(int64(mb.Len()))
+		w.markDirty()
 	}
 	return w.Writer.WriteMultiBuffer(mb)
 }

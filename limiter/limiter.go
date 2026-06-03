@@ -59,6 +59,48 @@ type UserLimitInfo struct {
 	DynamicSpeedLimit atomic.Int64
 	ExpireTime        atomic.Int64
 	OverLimit         atomic.Bool
+
+	// W6.1 / W3.6 后半 / audit #3: short-window cache so hy2 logger's
+	// per-stream callbacks don't re-run the full CheckLimit (which walks
+	// sync.Map, applies device-limit math, and may trigger online-IP
+	// reorder) for every Connect/TCPRequest/UDPRequest event. The cached
+	// rejected decision is reused for up to CheckCacheWindow.
+	//
+	// Trade-off: device-limit changes (user removed a device) are detected
+	// at most CheckCacheWindow late on the cached side. For Reality / hy2
+	// where streams are short-lived this is invisible in practice.
+	lastCheckNanos    atomic.Int64
+	lastCheckRejected atomic.Bool
+}
+
+// CheckCacheWindow bounds how stale a UserLimitInfo.lastCheck* read can be
+// before callers must re-run the full CheckLimit. 2s is short enough that
+// a freshly-OverLimit user is reset within one keepalive window, long
+// enough to elide repeated work across hy2's three per-flow callbacks.
+const CheckCacheWindow = 2 * time.Second
+
+// CachedCheck returns (rejected, hit) — if hit is true, the rejected bool
+// is the cached CheckLimit result valid for CheckCacheWindow. Callers MUST
+// fall back to a fresh CheckLimit + StoreCheckResult when hit is false.
+//
+// W6.1 / W3.6 后半.
+func (u *UserLimitInfo) CachedCheck(now time.Time) (rejected bool, hit bool) {
+	last := u.lastCheckNanos.Load()
+	if last == 0 {
+		return false, false
+	}
+	if now.UnixNano()-last > int64(CheckCacheWindow) {
+		return false, false
+	}
+	return u.lastCheckRejected.Load(), true
+}
+
+// StoreCheckResult records a fresh CheckLimit decision into the cache.
+// Safe to call concurrently from multiple goroutines; last writer wins,
+// which is fine — the cache is best-effort.
+func (u *UserLimitInfo) StoreCheckResult(now time.Time, rejected bool) {
+	u.lastCheckRejected.Store(rejected)
+	u.lastCheckNanos.Store(now.UnixNano())
 }
 
 func AddLimiter(nodeType string, tag string, l *conf.LimitConfig, users []panel.UserInfo, aliveList map[int]int) *Limiter {

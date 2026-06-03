@@ -2,73 +2,72 @@ package conf
 
 import "testing"
 
-// TestCustomOutboundDefaultsAreSafe pins the W6 / audit #8 safe-by-default
-// rule: a nil or empty CustomOutboundConfig MUST allow only freedom and
-// blackhole — not vmess / socks / http / etc. that could route real
-// traffic through panel-controlled remotes.
-func TestCustomOutboundDefaultsAreSafe(t *testing.T) {
-	cases := []struct {
-		proto       string
-		wantAllowed bool
-	}{
-		{"freedom", true},
-		{"blackhole", true},
-		{"vmess", false},
-		{"socks", false},
-		{"http", false},
-		{"trojan", false},
-		{"shadowsocks", false},
-	}
-	for _, c := range cases {
-		got := IsCustomOutboundAllowed(nil, c.proto)
-		if got != c.wantAllowed {
-			t.Errorf("nil config, IsCustomOutboundAllowed(%q) = %v, want %v", c.proto, got, c.wantAllowed)
+// TestCustomOutboundDefaultsArePermissive pins the W6 / audit #8 behavior:
+// without explicit hardening, panel-pushed outbounds of ANY protocol are
+// accepted — panel-driven routing is a core V2bX feature and must keep
+// working with zero node-side config.
+func TestCustomOutboundDefaultsArePermissive(t *testing.T) {
+	for _, proto := range []string{
+		"freedom", "blackhole",
+		"vmess", "vless", "trojan",
+		"socks", "http", "shadowsocks",
+		"anything-the-panel-sends",
+	} {
+		if !IsCustomOutboundAllowed(nil, proto) {
+			t.Errorf("nil config: %q must be allowed (default is permissive)", proto)
+		}
+		if !IsCustomOutboundAllowed(&CustomOutboundConfig{}, proto) {
+			t.Errorf("empty config: %q must be allowed (default is permissive)", proto)
 		}
 	}
 }
 
-// TestCustomOutboundExplicitWidening pins the legacy escape hatch: setting
-// AllowedProtocols to ["*"] restores the pre-W6 permissive behavior.
-func TestCustomOutboundExplicitWidening(t *testing.T) {
-	cfg := &CustomOutboundConfig{AllowedProtocols: []string{"*"}}
-	for _, proto := range []string{"vmess", "socks", "freedom", "anything"} {
-		if !IsCustomOutboundAllowed(cfg, proto) {
-			t.Errorf(`AllowedProtocols=["*"] but IsCustomOutboundAllowed(%q) = false; want true`, proto)
-		}
-	}
-}
-
-// TestCustomOutboundExplicitList pins the per-protocol allow-list path.
-func TestCustomOutboundExplicitList(t *testing.T) {
-	cfg := &CustomOutboundConfig{AllowedProtocols: []string{"freedom", "socks"}}
-	if !IsCustomOutboundAllowed(cfg, "socks") {
-		t.Error("socks should be allowed when in list")
-	}
-	if !IsCustomOutboundAllowed(cfg, "freedom") {
-		t.Error("freedom should be allowed when in list")
-	}
-	if IsCustomOutboundAllowed(cfg, "vmess") {
-		t.Error("vmess NOT in list — must be rejected")
-	}
-	if IsCustomOutboundAllowed(cfg, "blackhole") {
-		t.Error("blackhole NOT in list — must be rejected (list overrides default safe-list)")
-	}
-}
-
-// TestCustomOutboundExplicitDisable pins Enabled=false rejecting everything.
+// TestCustomOutboundExplicitDisable pins the hard opt-out: Enabled=false
+// rejects everything.
 func TestCustomOutboundExplicitDisable(t *testing.T) {
 	disabled := false
 	cfg := &CustomOutboundConfig{Enabled: &disabled}
 	if IsCustomOutboundEnabled(cfg) {
-		t.Error("Enabled=false should report not-enabled")
+		t.Fatal("Enabled=false should report not-enabled")
 	}
 }
 
-func TestCustomOutboundNilEnabledMeansOn(t *testing.T) {
+// TestCustomOutboundExplicitList pins the per-protocol allow-list path:
+// once AllowedProtocols is set, the list becomes authoritative.
+func TestCustomOutboundExplicitList(t *testing.T) {
+	cfg := &CustomOutboundConfig{AllowedProtocols: []string{"freedom", "socks"}}
+	for _, proto := range []string{"freedom", "socks"} {
+		if !IsCustomOutboundAllowed(cfg, proto) {
+			t.Errorf("%q should be allowed (in explicit list)", proto)
+		}
+	}
+	for _, proto := range []string{"vmess", "trojan", "shadowsocks"} {
+		if IsCustomOutboundAllowed(cfg, proto) {
+			t.Errorf("%q NOT in explicit list — must be rejected", proto)
+		}
+	}
+}
+
+// TestCustomOutboundWildcardEqualsDefault pins that ["*"] behaves exactly
+// like the empty/nil default — it's an explicit form of "accept all".
+func TestCustomOutboundWildcardEqualsDefault(t *testing.T) {
+	cfg := &CustomOutboundConfig{AllowedProtocols: []string{"*"}}
+	for _, proto := range []string{"vmess", "socks", "freedom", "anything"} {
+		if !IsCustomOutboundAllowed(cfg, proto) {
+			t.Errorf(`AllowedProtocols=["*"]: %q must be allowed`, proto)
+		}
+	}
+}
+
+func TestCustomOutboundEnabledDefaults(t *testing.T) {
 	if !IsCustomOutboundEnabled(nil) {
-		t.Error("nil config should still be enabled (safe whitelist applies)")
+		t.Error("nil config should default to enabled")
 	}
 	if !IsCustomOutboundEnabled(&CustomOutboundConfig{}) {
-		t.Error("config with nil Enabled pointer should be enabled (safe whitelist applies)")
+		t.Error("empty config should default to enabled")
+	}
+	enabled := true
+	if !IsCustomOutboundEnabled(&CustomOutboundConfig{Enabled: &enabled}) {
+		t.Error("Enabled=true should report enabled")
 	}
 }

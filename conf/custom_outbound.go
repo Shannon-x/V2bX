@@ -4,38 +4,39 @@ package conf
 // JSON (info.Rules.RawOutbound / info.Rules.RawDefaultOut) is loaded into
 // the running core.
 //
-// W6 / audit #8: previously V2bX accepted any panel-pushed outbound config
-// with zero filtering — a compromised panel could MITM every proxied flow
-// by routing it through an attacker-controlled SOCKS5 / HTTP / VMess
-// upstream. From W6 the default is "whitelist freedom/blackhole only";
-// deployers who actually need richer custom outbounds (most don't) must
-// explicitly widen AllowedProtocols.
+// Design intent: panel-driven custom outbounds are a CORE FEATURE — most
+// V2bX deployments rely on the panel pushing socks/http/vmess outbounds
+// for routing logic. Therefore the default is **permissive**: any
+// panel-pushed outbound is accepted (matches pre-W6 behavior). The
+// CustomOutboundConfig fields exist as an OPTIONAL HARDENING knob for
+// deployers who want a tighter trust boundary (e.g. multi-tenant nodes
+// where the panel and node operator aren't the same party).
 //
-// The `Enabled` pointer-bool exists so that:
-//   - missing (nil) → default safe behavior (Enabled=true, whitelist =
-//     [freedom, blackhole])
-//   - explicit false → reject ALL custom outbounds, including freedom
-//   - explicit true → use AllowedProtocols (which falls back to the safe
-//     whitelist if empty)
+// Behavior matrix:
+//
+//	| Config                                       | Effect                          |
+//	| -------------------------------------------- | ------------------------------- |
+//	| (omitted / nil)                              | accept ALL (default, pre-W6)    |
+//	| Enabled=false                                | reject ALL                      |
+//	| Enabled=true (or nil) + AllowedProtocols=[]  | accept ALL                      |
+//	| Enabled=true + AllowedProtocols=["freedom"]  | accept ONLY listed protocols    |
+//	| Enabled=true + AllowedProtocols=["*"]        | accept ALL (explicit form)      |
+//
+// Audit #8 — see AUDIT_REPORT §3.3 for the trust-boundary declaration
+// reminding deployers that an unrestricted panel must be treated as
+// node-root-equivalent.
 type CustomOutboundConfig struct {
 	Enabled          *bool    `json:"Enabled,omitempty"`
 	AllowedProtocols []string `json:"AllowedProtocols,omitempty"`
 }
 
-// DefaultAllowedOutbounds is the safe default protocol list — these don't
-// route traffic to operator-controlled remotes, so they can't be used to
-// MITM. Override via Options.CustomOutbound.AllowedProtocols if you trust
-// the panel and actually need richer outbounds.
-var DefaultAllowedOutbounds = []string{"freedom", "blackhole"}
-
-// LegacyPermissiveWildcard, when present in AllowedProtocols, restores the
-// pre-W6 behavior of accepting ANY protocol the panel sends. Documented
-// here so deployers grepping for the old behavior can find this comment.
-const LegacyPermissiveWildcard = "*"
+// PermissiveWildcard, when present in AllowedProtocols, accepts ANY
+// protocol the panel sends. This is also the default when AllowedProtocols
+// is empty / unset.
+const PermissiveWildcard = "*"
 
 // IsCustomOutboundEnabled returns whether custom outbound loading should
-// proceed at all. nil config → enabled by default (safe whitelist still
-// applies via IsCustomOutboundAllowed).
+// proceed at all. nil config or missing Enabled field → enabled (default).
 func IsCustomOutboundEnabled(c *CustomOutboundConfig) bool {
 	if c == nil || c.Enabled == nil {
 		return true
@@ -44,15 +45,19 @@ func IsCustomOutboundEnabled(c *CustomOutboundConfig) bool {
 }
 
 // IsCustomOutboundAllowed reports whether a specific outbound protocol may
-// be loaded. The safe whitelist applies when the field is unset/empty;
-// callers that intentionally want everything must include "*" explicitly.
+// be loaded. Default (nil config / empty AllowedProtocols / wildcard
+// entry) is PERMISSIVE — every protocol is accepted, so panel-driven
+// routing keeps working without any node-side configuration change.
+//
+// To restrict, set AllowedProtocols to a concrete list e.g.
+// ["freedom","blackhole","socks"].
 func IsCustomOutboundAllowed(c *CustomOutboundConfig, proto string) bool {
-	list := DefaultAllowedOutbounds
-	if c != nil && len(c.AllowedProtocols) > 0 {
-		list = c.AllowedProtocols
+	// nil config or empty list ⇒ permissive (pre-W6 / default behavior).
+	if c == nil || len(c.AllowedProtocols) == 0 {
+		return true
 	}
-	for _, p := range list {
-		if p == LegacyPermissiveWildcard || p == proto {
+	for _, p := range c.AllowedProtocols {
+		if p == PermissiveWildcard || p == proto {
 			return true
 		}
 	}

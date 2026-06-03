@@ -27,12 +27,19 @@ type DNSConfig struct {
 }
 
 type Sing struct {
-	box                       *box.Box
-	ctx                       context.Context
-	hookServer                *HookServer
-	router                    adapter.Router
-	logFactory                log.Factory
-	users                     *UserMap
+	box        *box.Box
+	ctx        context.Context
+	hookServer *HookServer
+	router     adapter.Router
+	logFactory log.Factory
+	users      *UserMap
+	// W2.3 / audit #32 #33: nodeReportMinTrafficBytes and inboundOptions are
+	// written from AddNode / UpdateNodeReportMinTraffic / DelNode and read
+	// concurrently from GetUserTrafficSlice / AddUsers / DelUsers on independent
+	// goroutines. optsMu serializes the map mutations to prevent
+	// `fatal error: concurrent map read and map write`.
+	// (The existing users.mapLock protects users.uidMap only.)
+	optsMu                    sync.RWMutex
 	nodeReportMinTrafficBytes map[string]int64
 	inboundOptions            map[string]any // tag -> inbound options, for rebuild on user change
 }

@@ -28,7 +28,10 @@ func (c *Xray) AddNode(tag string, info *panel.NodeInfo, config *conf.Options) e
 	if info.NodeReportMinTraffic > 0 {
 		reportMin = int64(info.NodeReportMinTraffic)
 	}
+	// W2.2: protect against concurrent GetUserTrafficSlice read.
+	c.reportMu.Lock()
 	c.nodeReportMinTrafficBytes[tag] = reportMin * 1024
+	c.reportMu.Unlock()
 	err := updateDNSConfig(info)
 	if err != nil {
 		return fmt.Errorf("build dns error: %s", err)
@@ -88,7 +91,10 @@ func (c *Xray) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, conf
 	if info.NodeReportMinTraffic > 0 {
 		reportMin = int64(info.NodeReportMinTraffic)
 	}
+	// W2.2: see AddNode comment.
+	c.reportMu.Lock()
 	c.nodeReportMinTrafficBytes[tag] = reportMin * 1024
+	c.reportMu.Unlock()
 }
 
 func (c *Xray) AddNodeCustomOutbounds(info *panel.NodeInfo) error {
@@ -175,11 +181,24 @@ func (c *Xray) addOutbound(config *core.OutboundHandlerConfig) error {
 }
 
 func (c *Xray) DelNode(tag string) error {
-	// 清理 dispatcher 中的流量计数器
+	// W2.8 / audit #35: remove the inbound handler FIRST so xray stops
+	// accepting new connections / dispatching them through getLink. Otherwise
+	// concurrent fresh connections would re-populate LinkManagers under the
+	// same tag after our Range+Delete, leaking goroutines and FDs.
+	if err := c.removeInbound(tag); err != nil {
+		return fmt.Errorf("remove in error: %s", err)
+	}
+	if err := c.removeOutbound(tag); err != nil {
+		return fmt.Errorf("remove out error: %s", err)
+	}
+
+	// Now safe to clean up per-tag bookkeeping — no new entries will appear.
 	c.dispatcher.Counter.Delete(tag)
 
-	// 清理 nodeReportMinTrafficBytes
+	// W2.2: protected by reportMu.
+	c.reportMu.Lock()
 	delete(c.nodeReportMinTrafficBytes, tag)
+	c.reportMu.Unlock()
 
 	// 清理该节点所有用户的 LinkManagers
 	// LinkManagers 的 key 格式是 format.UserTag(tag, uuid) = "tag|uuid"
@@ -192,15 +211,6 @@ func (c *Xray) DelNode(tag string) error {
 		}
 		return true
 	})
-
-	err := c.removeInbound(tag)
-	if err != nil {
-		return fmt.Errorf("remove in error: %s", err)
-	}
-	err = c.removeOutbound(tag)
-	if err != nil {
-		return fmt.Errorf("remove out error: %s", err)
-	}
 	return nil
 }
 

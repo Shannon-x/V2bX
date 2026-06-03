@@ -36,7 +36,11 @@ func (h *Hysteria2) AddUsers(p *vCore.AddUsersParams) (added int, err error) {
 }
 
 func (h *Hysteria2) DelUsers(users []panel.UserInfo, tag string, _ *panel.NodeInfo) error {
-	if node, ok := h.Hy2nodes[tag]; ok {
+	// W2.1: snapshot pointer under read lock; Counter operates outside.
+	h.nodesMu.RLock()
+	node, ok := h.Hy2nodes[tag]
+	h.nodesMu.RUnlock()
+	if ok {
 		if hook, ok := node.TrafficLogger.(*HookServer); ok {
 			if v, ok := hook.Counter.Load(tag); ok {
 				c := v.(*counter.TrafficCounter)
@@ -58,10 +62,14 @@ func (h *Hysteria2) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTra
 	trafficSlice := make([]panel.UserTraffic, 0)
 	h.Auth.mutex.RLock()
 	defer h.Auth.mutex.RUnlock()
-	if _, ok := h.Hy2nodes[tag]; !ok {
+	// W2.1: snapshot the node under nodesMu read lock instead of indexing twice.
+	h.nodesMu.RLock()
+	node, ok := h.Hy2nodes[tag]
+	h.nodesMu.RUnlock()
+	if !ok {
 		return nil, nil
 	}
-	hook := h.Hy2nodes[tag].TrafficLogger.(*HookServer)
+	hook := node.TrafficLogger.(*HookServer)
 	if v, ok := hook.Counter.Load(tag); ok {
 		c := v.(*counter.TrafficCounter)
 		c.Counters.Range(func(key, value interface{}) bool {
@@ -75,7 +83,7 @@ func (h *Hysteria2) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTra
 				up = traffic.UpCounter.Load()
 				down = traffic.DownCounter.Load()
 			}
-			if up+down > hook.ReportMinTrafficBytes {
+			if up+down > hook.ReportMinTrafficBytes.Load() {
 				if h.Auth.usersMap[uuid] == 0 {
 					c.Delete(uuid)
 					return true

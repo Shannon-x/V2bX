@@ -91,13 +91,12 @@ func (h *HookServer) RoutedConnection(_ context.Context, conn net.Conn, m adapte
 			}
 		}
 	}
-	var t *counter.TrafficCounter
-	if c, ok := h.counter.Load(m.Inbound); !ok {
-		t = counter.NewTrafficCounter()
-		h.counter.Store(m.Inbound, t)
-	} else {
-		t = c.(*counter.TrafficCounter)
-	}
+	// W2.5 / audit #23 #57: LoadOrStore eliminates the Load+Store race that
+	// allowed two concurrent first-connection events on the same inbound to
+	// each construct a TrafficCounter and have one orphaned (its recorded
+	// traffic invisible to subsequent reads).
+	actual, _ := h.counter.LoadOrStore(m.Inbound, counter.NewTrafficCounter())
+	t := actual.(*counter.TrafficCounter)
 	conn = counter.NewConnCounter(conn, t.GetCounter(m.User))
 	return conn
 }
@@ -166,13 +165,9 @@ func (h *HookServer) RoutedPacketConnection(_ context.Context, conn N.PacketConn
 			}
 		}
 	}
-	var t *counter.TrafficCounter
-	if c, ok := h.counter.Load(m.Inbound); !ok {
-		t = counter.NewTrafficCounter()
-		h.counter.Store(m.Inbound, t)
-	} else {
-		t = c.(*counter.TrafficCounter)
-	}
+	// W2.5 / audit #23 #57: same LoadOrStore fix as for TCP.
+	actual, _ := h.counter.LoadOrStore(m.Inbound, counter.NewTrafficCounter())
+	t := actual.(*counter.TrafficCounter)
 	conn = counter.NewPacketConnCounter(conn, t.GetCounter(m.User))
 	return conn
 }

@@ -26,8 +26,11 @@ func (c *Controller) reportUserTrafficTask() (err error) {
 		var result []panel.OnlineUser
 		var nocountUID = make(map[int]struct{})
 		minTraffic := c.Options.DeviceOnlineMinTraffic
-		if c.info != nil && c.info.DeviceOnlineMinTraffic > 0 {
-			minTraffic = int64(c.info.DeviceOnlineMinTraffic)
+		// W2.4: atomic snapshot of NodeInfo; tolerate the brief window where
+		// info is nil during startup.
+		curInfo := c.info.Load()
+		if curInfo != nil && curInfo.DeviceOnlineMinTraffic > 0 {
+			minTraffic = int64(curInfo.DeviceOnlineMinTraffic)
 		}
 		for _, traffic := range userTraffic {
 			total := traffic.Upload + traffic.Download

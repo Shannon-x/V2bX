@@ -22,7 +22,10 @@ func (b *Sing) AddUsers(p *core.AddUsersParams) (added int, err error) {
 		b.users.uidMap[p.Users[i].Uuid] = p.Users[i].Id
 	}
 	// Get existing inbound options to rebuild with new users
+	// W2.3: read under optsMu to coordinate with AddNode/DelNode.
+	b.optsMu.RLock()
 	opts, ok := b.inboundOptions[p.Tag]
+	b.optsMu.RUnlock()
 	if !ok {
 		return 0, errors.New("inbound options not found for tag: " + p.Tag)
 	}
@@ -153,6 +156,11 @@ func (b *Sing) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 	hook := b.hookServer
 	b.users.mapLock.RLock()
 	defer b.users.mapLock.RUnlock()
+	// W2.3: snapshot the threshold once instead of indexing the bare map
+	// inside the Counter.Range callback (would race with AddNode/DelNode).
+	b.optsMu.RLock()
+	reportMin := b.nodeReportMinTrafficBytes[tag]
+	b.optsMu.RUnlock()
 	if v, ok := hook.counter.Load(tag); ok {
 		c := v.(*counter.TrafficCounter)
 		c.Counters.Range(func(key, value interface{}) bool {
@@ -166,7 +174,7 @@ func (b *Sing) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 				up = traffic.UpCounter.Load()
 				down = traffic.DownCounter.Load()
 			}
-			if up+down > b.nodeReportMinTrafficBytes[tag] {
+			if up+down > reportMin {
 				if b.users.uidMap[uuid] == 0 {
 					c.Delete(uuid)
 					return true
@@ -219,7 +227,10 @@ func (b *Sing) DelUsers(users []panel.UserInfo, tag string, info *panel.NodeInfo
 	}
 
 	// Remove users from inbound options
+	// W2.3: read under optsMu.
+	b.optsMu.RLock()
 	opts, ok := b.inboundOptions[tag]
+	b.optsMu.RUnlock()
 	if !ok {
 		return errors.New("inbound options not found for tag: " + tag)
 	}

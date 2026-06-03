@@ -45,7 +45,11 @@ func (c *Controller) startTasks(node *panel.NodeInfo) {
 		}
 	}
 	if c.LimitConfig.EnableDynamicSpeedLimit {
+		// W2.4: initialize under trafficMu in case startTasks is ever called
+		// concurrently with a stale ticker firing (rebuild-on-reload path).
+		c.trafficMu.Lock()
 		c.traffic = make(map[string]int64)
+		c.trafficMu.Unlock()
 		c.dynamicSpeedLimitPeriodic = &task.Task{
 			Name:     "dynamicSpeedLimitTask",
 			Interval: time.Duration(c.LimitConfig.DynamicSpeedLimitConfig.Periodic) * time.Second,
@@ -92,7 +96,9 @@ func (c *Controller) nodeInfoMonitor() (err error) {
 		// the inbound handler to avoid disconnecting all active users.
 		// Full inbound rebuild is only done on config file change (via watcher).
 		log.WithField("tag", c.tag).Info("Node config updated, refreshing metadata")
-		c.info = newN
+		// W2.4: atomic publish — readers (reportUserTrafficTask, hot path)
+		// always observe a consistent NodeInfo.
+		c.info.Store(newN)
 
 		// Update alive list
 		if newA != nil {
@@ -116,7 +122,7 @@ func (c *Controller) nodeInfoMonitor() (err error) {
 		}
 
 		// Update nodeReportMinTraffic in core
-		c.server.UpdateNodeReportMinTraffic(c.tag, c.info, c.Options)
+		c.server.UpdateNodeReportMinTraffic(c.tag, newN, c.Options)
 
 		// Check interval changes
 		if c.nodeInfoMonitorPeriodic.Interval != newN.PullInterval &&
@@ -148,9 +154,12 @@ func (c *Controller) nodeInfoMonitor() (err error) {
 		return nil
 	}
 	deleted, added, modified := compareUserList(c.userList, newU)
+	// W2.4: snapshot the current NodeInfo pointer once for the rest of this
+	// tick; downstream calls must not re-Load to avoid mismatches.
+	curInfo := c.info.Load()
 	if len(deleted) > 0 {
 		// have deleted users
-		err = c.server.DelUsers(deleted, c.tag, c.info)
+		err = c.server.DelUsers(deleted, c.tag, curInfo)
 		if err != nil {
 			log.WithFields(log.Fields{
 				"tag": c.tag,
@@ -163,7 +172,7 @@ func (c *Controller) nodeInfoMonitor() (err error) {
 		// have added users
 		_, err = c.server.AddUsers(&vCore.AddUsersParams{
 			Tag:      c.tag,
-			NodeInfo: c.info,
+			NodeInfo: curInfo,
 			Users:    added,
 		})
 		if err != nil {
@@ -179,9 +188,12 @@ func (c *Controller) nodeInfoMonitor() (err error) {
 		c.limiter.UpdateUser(c.tag, added, deleted, modified)
 		// clear traffic record
 		if c.LimitConfig.EnableDynamicSpeedLimit {
+			// W2.4: trafficMu serializes with SpeedChecker.
+			c.trafficMu.Lock()
 			for i := range deleted {
 				delete(c.traffic, deleted[i].Uuid)
 			}
+			c.trafficMu.Unlock()
 		}
 	}
 	c.userList = newU
@@ -193,15 +205,30 @@ func (c *Controller) nodeInfoMonitor() (err error) {
 }
 
 func (c *Controller) SpeedChecker() error {
+	// W2.4: snapshot keys under trafficMu so we can release the lock before
+	// the (potentially slow) UpdateDynamicSpeedLimit call. Concurrent
+	// nodeInfoMonitor / startTasks reinitialisation are now safe.
+	c.trafficMu.Lock()
+	type kv struct {
+		u string
+		t int64
+	}
+	due := make([]kv, 0, len(c.traffic))
 	for u, t := range c.traffic {
 		if t >= c.LimitConfig.DynamicSpeedLimitConfig.Traffic {
-			err := c.limiter.UpdateDynamicSpeedLimit(c.tag, u,
-				c.LimitConfig.DynamicSpeedLimitConfig.SpeedLimit,
-				time.Now().Add(time.Duration(c.LimitConfig.DynamicSpeedLimitConfig.ExpireTime)*time.Minute))
-			if err != nil {
-				log.WithField("err", err).Error("Update dynamic speed limit failed")
-			}
-			delete(c.traffic, u)
+			due = append(due, kv{u, t})
+		}
+	}
+	for _, x := range due {
+		delete(c.traffic, x.u)
+	}
+	c.trafficMu.Unlock()
+	for _, x := range due {
+		err := c.limiter.UpdateDynamicSpeedLimit(c.tag, x.u,
+			c.LimitConfig.DynamicSpeedLimitConfig.SpeedLimit,
+			time.Now().Add(time.Duration(c.LimitConfig.DynamicSpeedLimitConfig.ExpireTime)*time.Minute))
+		if err != nil {
+			log.WithField("err", err).Error("Update dynamic speed limit failed")
 		}
 	}
 	return nil

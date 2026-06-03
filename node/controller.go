@@ -3,6 +3,8 @@ package node
 import (
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 
 	"github.com/InazumaV/V2bX/api/panel"
 	"github.com/InazumaV/V2bX/common/task"
@@ -10,18 +12,25 @@ import (
 	vCore "github.com/InazumaV/V2bX/core"
 	"github.com/InazumaV/V2bX/limiter"
 	log "github.com/sirupsen/logrus"
-	"sync"
 )
 
 type Controller struct {
-	server                    vCore.Core
-	apiClient                 *panel.Client
-	tag                       string
-	limiter                   *limiter.Limiter
-	traffic                   map[string]int64
-	userList                  []panel.UserInfo
-	aliveMap                  map[int]int
-	info                      *panel.NodeInfo
+	server    vCore.Core
+	apiClient *panel.Client
+	tag       string
+	limiter   *limiter.Limiter
+	// W2.4 / audit #16: traffic is mutated from nodeInfoMonitor and
+	// SpeedChecker on independent tickers. trafficMu serializes the map
+	// accesses (Go forbids concurrent map write + delete even if values
+	// aren't aliased).
+	traffic   map[string]int64
+	trafficMu sync.Mutex
+	userList  []panel.UserInfo
+	aliveMap  map[int]int
+	// W2.4 / audit #4 #16: info is replaced on every nodeInfoMonitor tick
+	// and concurrently read by reportUserTrafficTask. atomic.Pointer keeps
+	// reads racefree without forcing every caller through a mutex.
+	info                      atomic.Pointer[panel.NodeInfo]
 	nodeInfoMonitorPeriodic   *task.Task
 	userReportPeriodic        *task.Task
 	renewCertPeriodic         *task.Task
@@ -102,7 +111,7 @@ func (c *Controller) Start() error {
 		return fmt.Errorf("add users error: %s", err)
 	}
 	log.WithField("tag", c.tag).Infof("Added %d new users", added)
-	c.info = node
+	c.info.Store(node)
 	c.startTasks(node)
 	return nil
 }

@@ -57,14 +57,13 @@ func (l *serverLogger) Connect(addr net.Addr, uuid string, tx uint64) {
 		l.logger.Info("client connected", zap.String("addr", addr.String()), zap.String("uuid", uuid), zap.Uint64("tx", tx))
 		return
 	}
-	if _, r := limiterinfo.CheckLimit(format.UserTag(l.Tag, uuid), extractIPFromAddr(addr), addr.Network() == "tcp", true); r {
-		if userLimit, ok := limiterinfo.UserLimitInfo.Load(format.UserTag(l.Tag, uuid)); ok {
-			userLimit.(*limiter.UserLimitInfo).OverLimit = true
-		}
-	} else {
-		if userLimit, ok := limiterinfo.UserLimitInfo.Load(format.UserTag(l.Tag, uuid)); ok {
-			userLimit.(*limiter.UserLimitInfo).OverLimit = false
-		}
+	// W2.7 / audit #27: OverLimit is atomic.Bool so concurrent flips from the
+	// hy2 stream goroutines and the LogTraffic CompareAndSwap reader stay
+	// coherent. Computing UserTag once also avoids three identical concats.
+	tu := format.UserTag(l.Tag, uuid)
+	_, r := limiterinfo.CheckLimit(tu, extractIPFromAddr(addr), addr.Network() == "tcp", true)
+	if userLimit, ok := limiterinfo.UserLimitInfo.Load(tu); ok {
+		userLimit.(*limiter.UserLimitInfo).OverLimit.Store(r)
 	}
 	l.logger.Info("client connected", zap.String("addr", addr.String()), zap.String("uuid", uuid), zap.Uint64("tx", tx))
 }
@@ -81,14 +80,11 @@ func (l *serverLogger) TCPRequest(addr net.Addr, uuid, reqAddr string) {
 		l.logger.Debug("TCP request", zap.String("addr", addr.String()), zap.String("uuid", uuid), zap.String("reqAddr", reqAddr))
 		return
 	}
-	if _, r := limiterinfo.CheckLimit(format.UserTag(l.Tag, uuid), extractIPFromAddr(addr), addr.Network() == "tcp", true); r {
-		if userLimit, ok := limiterinfo.UserLimitInfo.Load(format.UserTag(l.Tag, uuid)); ok {
-			userLimit.(*limiter.UserLimitInfo).OverLimit = true
-		}
-	} else {
-		if userLimit, ok := limiterinfo.UserLimitInfo.Load(format.UserTag(l.Tag, uuid)); ok {
-			userLimit.(*limiter.UserLimitInfo).OverLimit = false
-		}
+	// W2.7 / audit #27: atomic OverLimit; UserTag computed once.
+	tu := format.UserTag(l.Tag, uuid)
+	_, r := limiterinfo.CheckLimit(tu, extractIPFromAddr(addr), addr.Network() == "tcp", true)
+	if userLimit, ok := limiterinfo.UserLimitInfo.Load(tu); ok {
+		userLimit.(*limiter.UserLimitInfo).OverLimit.Store(r)
 	}
 	l.logger.Debug("TCP request", zap.String("addr", addr.String()), zap.String("uuid", uuid), zap.String("reqAddr", reqAddr))
 }
@@ -109,14 +105,11 @@ func (l *serverLogger) UDPRequest(addr net.Addr, uuid string, sessionId uint32, 
 		l.logger.Debug("UDP request", zap.String("addr", addr.String()), zap.String("uuid", uuid), zap.Uint32("sessionId", sessionId), zap.String("reqAddr", reqAddr))
 		return
 	}
-	if _, r := limiterinfo.CheckLimit(format.UserTag(l.Tag, uuid), extractIPFromAddr(addr), addr.Network() == "tcp", true); r {
-		if userLimit, ok := limiterinfo.UserLimitInfo.Load(format.UserTag(l.Tag, uuid)); ok {
-			userLimit.(*limiter.UserLimitInfo).OverLimit = true
-		}
-	} else {
-		if userLimit, ok := limiterinfo.UserLimitInfo.Load(format.UserTag(l.Tag, uuid)); ok {
-			userLimit.(*limiter.UserLimitInfo).OverLimit = false
-		}
+	// W2.7 / audit #27: atomic OverLimit; UserTag computed once.
+	tu := format.UserTag(l.Tag, uuid)
+	_, r := limiterinfo.CheckLimit(tu, extractIPFromAddr(addr), addr.Network() == "tcp", true)
+	if userLimit, ok := limiterinfo.UserLimitInfo.Load(tu); ok {
+		userLimit.(*limiter.UserLimitInfo).OverLimit.Store(r)
 	}
 	l.logger.Debug("UDP request", zap.String("addr", addr.String()), zap.String("uuid", uuid), zap.Uint32("sessionId", sessionId), zap.String("reqAddr", reqAddr))
 }

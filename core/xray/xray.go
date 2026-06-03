@@ -30,12 +30,19 @@ func init() {
 
 // Xray Structure
 type Xray struct {
-	access                    sync.Mutex
-	Server                    *core.Instance
-	ihm                       inbound.Manager
-	ohm                       outbound.Manager
-	dispatcher                *dispatcher.DefaultDispatcher
-	users                     *UserMap
+	access     sync.Mutex
+	Server     *core.Instance
+	ihm        inbound.Manager
+	ohm        outbound.Manager
+	dispatcher *dispatcher.DefaultDispatcher
+	users      *UserMap
+	// W2.2 / audit #12 #14 #34: nodeReportMinTrafficBytes is written by AddNode
+	// / UpdateNodeReportMinTraffic / DelNode (config-driven goroutines) and
+	// concurrently read by GetUserTrafficSlice (report goroutine) for every
+	// counter entry. A bare map here panics under load. reportMu (separate
+	// from `access`, which gates Start/Close only) keeps the hot read path
+	// cheap with RLock.
+	reportMu                  sync.RWMutex
 	nodeReportMinTrafficBytes map[string]int64
 }
 

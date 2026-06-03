@@ -68,6 +68,13 @@ func (x *Xray) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 	trafficSlice := make([]panel.UserTraffic, 0)
 	x.users.mapLock.RLock()
 	defer x.users.mapLock.RUnlock()
+	// W2.2: snapshot the threshold once instead of indexing the bare map
+	// inside the Counter.Range callback (which would race with AddNode /
+	// DelNode / UpdateNodeReportMinTraffic and panic on `concurrent map
+	// read and map write`).
+	x.reportMu.RLock()
+	reportMin := x.nodeReportMinTrafficBytes[tag]
+	x.reportMu.RUnlock()
 	if v, ok := x.dispatcher.Counter.Load(tag); ok {
 		c := v.(*counter.TrafficCounter)
 		c.Counters.Range(func(key, value interface{}) bool {
@@ -82,7 +89,7 @@ func (x *Xray) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 				up = traffic.UpCounter.Load()
 				down = traffic.DownCounter.Load()
 			}
-			if up+down > x.nodeReportMinTrafficBytes[tag] {
+			if up+down > reportMin {
 				if x.users.uidMap[email] == 0 {
 					c.Delete(email)
 					return true

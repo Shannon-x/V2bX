@@ -45,13 +45,20 @@ type Limiter struct {
 	AliveList     atomic.Pointer[map[int]int]
 }
 
+// UserLimitInfo carries the per-user limit state. All mutable fields are
+// atomic because they are written from background goroutines (panel sync
+// task, dynamic-speed-limit task, hy2 logger callbacks) and concurrently
+// read from connection-handling goroutines (hy2 hook, xray dispatcher,
+// sing hook). W2.6 / W2.7 / audit #26 #27 #42 #48.
+//
+// UID is set once at construction and not mutated, so it stays a plain int.
 type UserLimitInfo struct {
 	UID               int
-	SpeedLimit        int
-	DeviceLimit       int
-	DynamicSpeedLimit int
-	ExpireTime        int64
-	OverLimit         bool
+	SpeedLimit        atomic.Int64
+	DeviceLimit       atomic.Int64
+	DynamicSpeedLimit atomic.Int64
+	ExpireTime        atomic.Int64
+	OverLimit         atomic.Bool
 }
 
 func AddLimiter(nodeType string, tag string, l *conf.LimitConfig, users []panel.UserInfo, aliveList map[int]int) *Limiter {
@@ -69,12 +76,8 @@ func AddLimiter(nodeType string, tag string, l *conf.LimitConfig, users []panel.
 		userLimit := &UserLimitInfo{
 			UID: users[i].Id,
 		}
-		if users[i].SpeedLimit != 0 {
-			userLimit.SpeedLimit = users[i].SpeedLimit
-		}
-		if users[i].DeviceLimit != 0 {
-			userLimit.DeviceLimit = users[i].DeviceLimit
-		}
+		userLimit.SpeedLimit.Store(int64(users[i].SpeedLimit))
+		userLimit.DeviceLimit.Store(int64(users[i].DeviceLimit))
 		info.UserLimitInfo.Store(format.UserTag(tag, users[i].Uuid), userLimit)
 	}
 	limiters.Store(tag, info)
@@ -114,13 +117,14 @@ func (l *Limiter) UpdateUser(tag string, added []panel.UserInfo, deleted []panel
 		// Clean up online IP tracking
 		l.UserOnlineIP.Delete(taguuid)
 	}
-	// Handle modified users: update limits in-place without disrupting connections
+	// Handle modified users: update limits in-place without disrupting connections.
+	// W2.6: atomic stores so concurrent CheckLimit readers never see a torn write.
 	for i := range modified {
 		taguuid := format.UserTag(tag, modified[i].Uuid)
 		if v, ok := l.UserLimitInfo.Load(taguuid); ok {
 			u := v.(*UserLimitInfo)
-			u.SpeedLimit = modified[i].SpeedLimit
-			u.DeviceLimit = modified[i].DeviceLimit
+			u.SpeedLimit.Store(int64(modified[i].SpeedLimit))
+			u.DeviceLimit.Store(int64(modified[i].DeviceLimit))
 		}
 		// Hot-swap the rate limit bucket for existing connections
 		limit := int64(determineSpeedLimit(l.SpeedLimit, modified[i].SpeedLimit)) * 1000000 / 8
@@ -139,13 +143,8 @@ func (l *Limiter) UpdateUser(tag string, added []panel.UserInfo, deleted []panel
 		userLimit := &UserLimitInfo{
 			UID: added[i].Id,
 		}
-		if added[i].SpeedLimit != 0 {
-			userLimit.SpeedLimit = added[i].SpeedLimit
-			userLimit.ExpireTime = 0
-		}
-		if added[i].DeviceLimit != 0 {
-			userLimit.DeviceLimit = added[i].DeviceLimit
-		}
+		userLimit.SpeedLimit.Store(int64(added[i].SpeedLimit))
+		userLimit.DeviceLimit.Store(int64(added[i].DeviceLimit))
 		l.UserLimitInfo.Store(format.UserTag(tag, added[i].Uuid), userLimit)
 		l.UUIDtoUID.Store(added[i].Uuid, added[i].Id)
 	}
@@ -154,8 +153,10 @@ func (l *Limiter) UpdateUser(tag string, added []panel.UserInfo, deleted []panel
 func (l *Limiter) UpdateDynamicSpeedLimit(tag, uuid string, limit int, expire time.Time) error {
 	if v, ok := l.UserLimitInfo.Load(format.UserTag(tag, uuid)); ok {
 		info := v.(*UserLimitInfo)
-		info.DynamicSpeedLimit = limit
-		info.ExpireTime = expire.Unix()
+		// W2.6: atomic stores so concurrent CheckLimit readers see a coherent
+		// (DynamicSpeedLimit, ExpireTime) update — not a torn pair.
+		info.DynamicSpeedLimit.Store(int64(limit))
+		info.ExpireTime.Store(expire.Unix())
 
 		// Hot-swap the rate limit bucket atomically — existing connections
 		// see the update immediately via DynamicBucket.Get()
@@ -190,18 +191,22 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 	var uid int
 	if v, ok := l.UserLimitInfo.Load(taguuid); ok {
 		u := v.(*UserLimitInfo)
-		deviceLimit = u.DeviceLimit
+		// W2.6: atomic loads — CheckLimit runs on every new connection and
+		// races with UpdateUser/UpdateDynamicSpeedLimit/expiry resets.
+		deviceLimit = int(u.DeviceLimit.Load())
 		uid = u.UID
-		if u.ExpireTime < time.Now().Unix() && u.ExpireTime != 0 {
-			if u.SpeedLimit != 0 {
-				userLimit = u.SpeedLimit
-				u.DynamicSpeedLimit = 0
-				u.ExpireTime = 0
+		expire := u.ExpireTime.Load()
+		speedLimit := int(u.SpeedLimit.Load())
+		if expire < time.Now().Unix() && expire != 0 {
+			if speedLimit != 0 {
+				userLimit = speedLimit
+				u.DynamicSpeedLimit.Store(0)
+				u.ExpireTime.Store(0)
 			} else {
 				l.UserLimitInfo.Delete(taguuid)
 			}
 		} else {
-			userLimit = determineSpeedLimit(u.SpeedLimit, u.DynamicSpeedLimit)
+			userLimit = determineSpeedLimit(speedLimit, int(u.DynamicSpeedLimit.Load()))
 		}
 	} else {
 		return nil, true

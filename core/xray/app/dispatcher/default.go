@@ -192,15 +192,14 @@ func (d *DefaultDispatcher) getLink(ctx context.Context, network net.Network) (*
 			common.Interrupt(inboundLink.Reader)
 			return nil, nil, nil, errors.New("Limited ", user.Email, " by conn or ip")
 		}
-		var lm *LinkManager
-		if lmloaded, ok := d.LinkManagers.Load(user.Email); !ok {
-			lm = &LinkManager{
-				links: make(map[*ManagedWriter]buf.Reader),
-			}
-			d.LinkManagers.Store(user.Email, lm)
-		} else {
-			lm = lmloaded.(*LinkManager)
-		}
+		// W2.5 / audit #1 #29 #39: LoadOrStore eliminates the Load+Store race
+		// that produced orphan LinkManagers — losers' ManagedWriters were
+		// registered to a LinkManager invisible to DelUsers, so the FD + pipe
+		// goroutine leaked permanently on user-delete.
+		lmActual, _ := d.LinkManagers.LoadOrStore(user.Email, &LinkManager{
+			links: make(map[*ManagedWriter]buf.Reader),
+		})
+		lm := lmActual.(*LinkManager)
 		managedWriter := newManagedWriter(uplinkWriter, lm)
 		lm.AddLink(managedWriter, outboundLink.Reader)
 		inboundLink.Writer = managedWriter
@@ -209,13 +208,9 @@ func (d *DefaultDispatcher) getLink(ctx context.Context, network net.Network) (*
 			inboundLink.Writer = rate.NewRateLimitWriter(inboundLink.Writer, w)
 			outboundLink.Writer = rate.NewRateLimitWriter(outboundLink.Writer, w)
 		}
-		var t *counter.TrafficCounter
-		if c, ok := d.Counter.Load(sessionInbound.Tag); !ok {
-			t = counter.NewTrafficCounter()
-			d.Counter.Store(sessionInbound.Tag, t)
-		} else {
-			t = c.(*counter.TrafficCounter)
-		}
+		// W2.5 / audit #28: LoadOrStore for the per-tag traffic counter.
+		tActual, _ := d.Counter.LoadOrStore(sessionInbound.Tag, counter.NewTrafficCounter())
+		t := tActual.(*counter.TrafficCounter)
 
 		ts := t.GetCounter(user.Email)
 		upcounter := &counter.XrayTrafficCounter{V: &ts.UpCounter}
@@ -376,28 +371,20 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 			common.Interrupt(outbound.Reader)
 			return errors.New("Limited ", user.Email, " by conn or ip")
 		}
-		var lm *LinkManager
-		if lmloaded, ok := d.LinkManagers.Load(user.Email); !ok {
-			lm = &LinkManager{
-				links: make(map[*ManagedWriter]buf.Reader),
-			}
-			d.LinkManagers.Store(user.Email, lm)
-		} else {
-			lm = lmloaded.(*LinkManager)
-		}
+		// W2.5 / audit #1 #29 #39: same LoadOrStore fix as in getLink.
+		lmActual, _ := d.LinkManagers.LoadOrStore(user.Email, &LinkManager{
+			links: make(map[*ManagedWriter]buf.Reader),
+		})
+		lm := lmActual.(*LinkManager)
 		managedWriter := newManagedWriter(outbound.Writer, lm)
 		outbound.Writer = managedWriter
 		if w != nil {
 			sessionInbound.CanSpliceCopy = 3
 			outbound.Writer = rate.NewRateLimitWriter(outbound.Writer, w)
 		}
-		var t *counter.TrafficCounter
-		if c, ok := d.Counter.Load(sessionInbound.Tag); !ok {
-			t = counter.NewTrafficCounter()
-			d.Counter.Store(sessionInbound.Tag, t)
-		} else {
-			t = c.(*counter.TrafficCounter)
-		}
+		// W2.5 / audit #28: LoadOrStore for the per-tag traffic counter.
+		tActual, _ := d.Counter.LoadOrStore(sessionInbound.Tag, counter.NewTrafficCounter())
+		t := tActual.(*counter.TrafficCounter)
 
 		ts := t.GetCounter(user.Email)
 		downcounter := &counter.XrayTrafficCounter{V: &ts.DownCounter}

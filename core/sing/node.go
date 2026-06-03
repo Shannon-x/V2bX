@@ -398,13 +398,16 @@ func (b *Sing) AddNode(tag string, info *panel.NodeInfo, config *conf.Options) e
 	if info.NodeReportMinTraffic > 0 {
 		reportMin = int64(info.NodeReportMinTraffic)
 	}
-	b.nodeReportMinTrafficBytes[tag] = reportMin * 1024
 	c, err := getInboundOptions(tag, info, config)
 	if err != nil {
 		return err
 	}
+	// W2.3: protect both maps from concurrent reader / writer panic.
+	b.optsMu.Lock()
+	b.nodeReportMinTrafficBytes[tag] = reportMin * 1024
 	// Store inbound options for user management rebuild
 	b.inboundOptions[tag] = c.Options
+	b.optsMu.Unlock()
 	in := b.box.Inbound()
 	err = in.Create(
 		b.ctx,
@@ -426,18 +429,21 @@ func (b *Sing) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, conf
 	if info.NodeReportMinTraffic > 0 {
 		reportMin = int64(info.NodeReportMinTraffic)
 	}
+	// W2.3: write under optsMu.
+	b.optsMu.Lock()
 	b.nodeReportMinTrafficBytes[tag] = reportMin * 1024
+	b.optsMu.Unlock()
 }
 
 func (b *Sing) DelNode(tag string) error {
 	// 清理 hookServer 中的流量计数器
 	b.hookServer.counter.Delete(tag)
 
-	// 清理 nodeReportMinTrafficBytes
+	// W2.3: clean both per-tag maps under optsMu.
+	b.optsMu.Lock()
 	delete(b.nodeReportMinTrafficBytes, tag)
-
-	// 清理缓存的 inbound options
 	delete(b.inboundOptions, tag)
+	b.optsMu.Unlock()
 
 	in := b.box.Inbound()
 	err := in.Remove(tag)

@@ -445,6 +445,11 @@ func (b *Sing) DelNode(tag string) error {
 	delete(b.inboundOptions, tag)
 	b.optsMu.Unlock()
 
+	// W2.9 / W6: drop the per-tag lock entry so a subsequent AddNode for
+	// the same tag gets a fresh mutex (and we don't leak entries in the
+	// long-running sync.Map).
+	b.tagLocks.Delete(tag)
+
 	in := b.box.Inbound()
 	err := in.Remove(tag)
 	if err != nil {

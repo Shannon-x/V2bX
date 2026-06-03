@@ -97,52 +97,64 @@ func (c *Xray) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, conf
 	c.reportMu.Unlock()
 }
 
-func (c *Xray) AddNodeCustomOutbounds(info *panel.NodeInfo) error {
-	for _, route := range info.Rules.RouteRules {
-		if route.RawOutbound != "" {
-			// This is a custom JSON outbound. Try to parse it.
-			outbound := &coreConf.OutboundDetourConfig{}
-			err := json.Unmarshal([]byte(route.RawOutbound), outbound)
-			if err != nil {
-				log.Errorf("Failed to unmarshal custom outbound JSON for tag %s: %v", route.OutboundTag, err)
-				continue
-			}
-
-			// Build the Xray OutboundHandlerConfig
-			customConfig, err := outbound.Build()
-			if err != nil {
-				log.Errorf("Failed to build custom outbound for tag %s: %v", route.OutboundTag, err)
-				continue
-			}
-
-			// Remove existing handler gracefully (for hot-reloading modified outbounds)
-			_ = c.removeOutbound(customConfig.Tag)
-
-			err = c.addOutbound(customConfig)
-			if err != nil {
-				log.Errorf("Failed to inject custom outbound %s into Xray: %v", customConfig.Tag, err)
-			} else {
-				log.Infof("Successfully injected custom JSON outbound: [%s]", customConfig.Tag)
-			}
-		}
+// AddNodeCustomOutbounds loads panel-supplied raw outbound JSON.
+//
+// W6 / audit #8: the panel sits OUTSIDE the node's trust boundary. A
+// compromised panel can otherwise route every proxied flow through an
+// attacker-controlled SOCKS5/HTTP/VMess upstream, MITM-ing all TLS that
+// isn't end-to-end pinned. The defense is a deployer-controlled whitelist
+// (Options.CustomOutbound.AllowedProtocols) that defaults to the safe set
+// {freedom, blackhole} — these don't route to operator-controlled remotes,
+// so they can't be used to redirect traffic. Set AllowedProtocols=["*"] to
+// restore the pre-W6 behavior.
+func (c *Xray) AddNodeCustomOutbounds(info *panel.NodeInfo, opts *conf.Options) error {
+	var cfg *conf.CustomOutboundConfig
+	if opts != nil {
+		cfg = opts.CustomOutbound
 	}
-
-	if info.Rules.RawDefaultOut != "" {
+	if !conf.IsCustomOutboundEnabled(cfg) {
+		// Explicit disable — count once per call, but only at debug level
+		// so the log isn't spammed if many nodes have it off.
+		log.Debugf("Custom outbound loading disabled via config; skipping panel outbounds")
+		return nil
+	}
+	loadIfAllowed := func(rawJSON, contextLabel string) {
+		if rawJSON == "" {
+			return
+		}
 		outbound := &coreConf.OutboundDetourConfig{}
-		err := json.Unmarshal([]byte(info.Rules.RawDefaultOut), outbound)
-		if err == nil {
-			if customConfig, err := outbound.Build(); err == nil {
-				_ = c.removeOutbound(customConfig.Tag)
-				if err = c.addOutbound(customConfig); err != nil {
-					log.Errorf("Failed to inject default_out %s into Xray: %v", customConfig.Tag, err)
-				} else {
-					log.Infof("Successfully injected custom default JSON outbound: [%s]", customConfig.Tag)
-				}
-			}
-		} else {
-			log.Errorf("Failed to unmarshal default_out custom JSON: %v", err)
+		if err := json.Unmarshal([]byte(rawJSON), outbound); err != nil {
+			log.Errorf("Failed to unmarshal custom outbound JSON for %s: %v", contextLabel, err)
+			return
 		}
+		// Look up the protocol BEFORE building so we can refuse cheaply.
+		// OutboundDetourConfig.Protocol is the field that holds e.g.
+		// "freedom" / "socks" / "vmess".
+		proto := strings.ToLower(outbound.Protocol)
+		if !conf.IsCustomOutboundAllowed(cfg, proto) {
+			log.Warnf("Custom outbound %s rejected: protocol %q not in CustomOutbound.AllowedProtocols. "+
+				"To restore pre-W6 behavior set CustomOutbound.AllowedProtocols=[\"*\"] in node Options "+
+				"(see AUDIT_REPORT §3.3 for the security rationale).",
+				contextLabel, proto)
+			return
+		}
+		customConfig, err := outbound.Build()
+		if err != nil {
+			log.Errorf("Failed to build custom outbound for %s: %v", contextLabel, err)
+			return
+		}
+		_ = c.removeOutbound(customConfig.Tag) // hot-reload tolerant
+		if err = c.addOutbound(customConfig); err != nil {
+			log.Errorf("Failed to inject custom outbound %s into Xray: %v", customConfig.Tag, err)
+			return
+		}
+		log.Infof("Successfully injected custom outbound [%s] proto=%s (%s)", customConfig.Tag, proto, contextLabel)
 	}
+
+	for _, route := range info.Rules.RouteRules {
+		loadIfAllowed(route.RawOutbound, "route:"+route.OutboundTag)
+	}
+	loadIfAllowed(info.Rules.RawDefaultOut, "default_out")
 	return nil
 }
 

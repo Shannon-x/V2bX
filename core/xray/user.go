@@ -77,9 +77,13 @@ func (x *Xray) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 	x.reportMu.RUnlock()
 	if v, ok := x.dispatcher.Counter.Load(tag); ok {
 		c := v.(*counter.TrafficCounter)
-		c.Counters.Range(func(key, value interface{}) bool {
-			email := key.(string)
-			traffic := value.(*counter.TrafficStorage)
+		// W6 / B3: iterate only users who actually received traffic since
+		// the previous report. On a 100k-user node with ~100 active users
+		// per period this is ~1000× faster than Counters.Range. Idle entries
+		// are simply skipped (the cleanup of long-dead entries happens via
+		// DelUsers / DelNode, not the report path).
+		walk := func(emailKey string, traffic *counter.TrafficStorage) bool {
+			email := emailKey
 			var up, down int64
 			if reset {
 				// Atomic swap: read and reset in one operation, prevents traffic loss
@@ -115,7 +119,9 @@ func (x *Xray) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 				}
 			}
 			return true
-		})
+		}
+		// W6 / B3: walk dirty-set instead of the full Counters map.
+		c.IterateDirty(reset, walk)
 		if len(trafficSlice) == 0 {
 			return nil, nil
 		}

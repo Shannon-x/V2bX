@@ -117,9 +117,9 @@ func (h *Hysteria2) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTra
 	hook := node.TrafficLogger.(*HookServer)
 	if v, ok := hook.Counter.Load(tag); ok {
 		c := v.(*counter.TrafficCounter)
-		c.Counters.Range(func(key, value interface{}) bool {
-			uuid := key.(string)
-			traffic := value.(*counter.TrafficStorage)
+		// W6 / B3: dirty-set iteration; see xray/sing equivalent.
+		walk := func(uuidKey string, traffic *counter.TrafficStorage) bool {
+			uuid := uuidKey
 			var up, down int64
 			if reset {
 				up = traffic.UpCounter.Swap(0)
@@ -151,7 +151,8 @@ func (h *Hysteria2) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTra
 				c.Delete(uuid)
 			}
 			return true
-		})
+		}
+		c.IterateDirty(reset, walk)
 		if len(trafficSlice) == 0 {
 			return nil, nil
 		}

@@ -89,6 +89,15 @@ func (m *LinkManager) RemoveWriter(writer *ManagedWriter) {
 	m.mu.Unlock()
 }
 
+// closeAllParallelThreshold is the link-count at which CloseAll switches
+// from sequential to bounded-parallel close. Below this, goroutine setup
+// is more expensive than the close work itself.
+const closeAllParallelThreshold = 16
+
+// closeAllWorkers caps the number of concurrent close goroutines so a
+// million-link CloseAll doesn't try to spawn a million goroutines.
+const closeAllWorkers = 32
+
 func (m *LinkManager) CloseAll() {
 	if m == nil {
 		return
@@ -100,8 +109,33 @@ func (m *LinkManager) CloseAll() {
 	}
 	m.links = make(map[*ManagedWriter]buf.Reader)
 	m.mu.Unlock()
-	for w, r := range links {
-		common.Close(w)
-		common.Interrupt(r)
+
+	// W6 / B4: parallelize Close+Interrupt for large user sets. On a
+	// ten-thousand-user DelNode this turns a sequential ~seconds-long
+	// teardown into a parallel sub-second one. Below the threshold the
+	// goroutine-setup overhead isn't worth it.
+	if len(links) < closeAllParallelThreshold {
+		for w, r := range links {
+			common.Close(w)
+			common.Interrupt(r)
+		}
+		return
 	}
+
+	sem := make(chan struct{}, closeAllWorkers)
+	var wg sync.WaitGroup
+	for w, r := range links {
+		w, r := w, r
+		sem <- struct{}{} // bounded — never spawn more than closeAllWorkers in flight
+		wg.Add(1)
+		go func() {
+			defer func() {
+				<-sem
+				wg.Done()
+			}()
+			common.Close(w)
+			common.Interrupt(r)
+		}()
+	}
+	wg.Wait()
 }

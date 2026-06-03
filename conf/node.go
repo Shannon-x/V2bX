@@ -148,13 +148,12 @@ func (n *NodeConfig) UnmarshalJSON(data []byte) (err error) {
 				return fmt.Errorf("fetch include URL error: %s", err)
 			}
 			defer rsp.Body.Close()
-			// W4.1 / W4.2 / audit #9 #18 #50: cap the response body so a
-			// gigabyte-or-larger payload (malicious or accidental) cannot
-			// OOM the node. MaxBytesReader signals io.ErrUnexpectedEOF /
-			// errors.New("http: request body too large") when the limit
-			// is exceeded.
+			// W4.1 / W4.2 / W6 / audit #9 #18 #50: cap the response body so
+			// a gigabyte-or-larger payload (malicious or accidental) cannot
+			// OOM the node. Belt and braces — MaxBytesReader on the body
+			// AND NewTrimNodeReaderLimit on the json5 parser.
 			limited := http.MaxBytesReader(nil, rsp.Body, includeBodyMaxBytes)
-			data, err = io.ReadAll(json5.NewTrimNodeReader(limited))
+			data, err = io.ReadAll(json5.NewTrimNodeReaderLimit(limited, includeBodyMaxBytes))
 			if err != nil {
 				return fmt.Errorf("read include URL error: %s", err)
 			}
@@ -164,7 +163,9 @@ func (n *NodeConfig) UnmarshalJSON(data []byte) (err error) {
 				return fmt.Errorf("open include file error: %s", err)
 			}
 			defer f.Close()
-			data, err = io.ReadAll(json5.NewTrimNodeReader(f))
+			// W6 / audit #50 后半: same 8 MiB ceiling for local Include files —
+			// a misconfigured path pointing at a huge file shouldn't OOM us.
+			data, err = io.ReadAll(json5.NewTrimNodeReaderLimit(f, includeBodyMaxBytes))
 			if err != nil {
 				return fmt.Errorf("read include file error: %s", err)
 			}
@@ -211,19 +212,24 @@ func (n *NodeConfig) UnmarshalJSON(data []byte) (err error) {
 }
 
 type Options struct {
-	Name                   string          `json:"Name"`
-	Core                   string          `json:"Core"`
-	CoreName               string          `json:"CoreName"`
-	ListenIP               string          `json:"ListenIP"`
-	SendIP                 string          `json:"SendIP"`
-	DeviceOnlineMinTraffic int64           `json:"DeviceOnlineMinTraffic"`
-	ReportMinTraffic       int64           `json:"ReportMinTraffic"`
-	LimitConfig            LimitConfig     `json:"LimitConfig"`
-	RawOptions             json.RawMessage `json:"RawOptions"`
-	XrayOptions            *XrayOptions    `json:"XrayOptions"`
-	SingOptions            *SingOptions    `json:"SingOptions"`
-	Hysteria2ConfigPath    string          `json:"Hysteria2ConfigPath"`
-	CertConfig             *CertConfig     `json:"CertConfig"`
+	Name                   string                `json:"Name"`
+	Core                   string                `json:"Core"`
+	CoreName               string                `json:"CoreName"`
+	ListenIP               string                `json:"ListenIP"`
+	SendIP                 string                `json:"SendIP"`
+	DeviceOnlineMinTraffic int64                 `json:"DeviceOnlineMinTraffic"`
+	ReportMinTraffic       int64                 `json:"ReportMinTraffic"`
+	LimitConfig            LimitConfig           `json:"LimitConfig"`
+	RawOptions             json.RawMessage       `json:"RawOptions"`
+	XrayOptions            *XrayOptions          `json:"XrayOptions"`
+	SingOptions            *SingOptions          `json:"SingOptions"`
+	Hysteria2ConfigPath    string                `json:"Hysteria2ConfigPath"`
+	CertConfig             *CertConfig           `json:"CertConfig"`
+	// W6 / audit #8: opt-in widening of the panel-pushed custom-outbound
+	// trust boundary. Nil / unset → safe default (whitelist freedom +
+	// blackhole). See CustomOutboundConfig docs for the rationale and the
+	// LegacyPermissiveWildcard knob.
+	CustomOutbound *CustomOutboundConfig `json:"CustomOutbound,omitempty"`
 }
 
 func (o *Options) UnmarshalJSON(data []byte) error {

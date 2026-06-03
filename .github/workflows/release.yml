@@ -135,13 +135,32 @@ jobs:
         run: |
           echo "version: $version"
           mkdir -p build_assets
-          GOEXPERIMENT=jsonv2 go build -v -o build_assets/V2bX -tags "sing xray hysteria2 with_quic with_grpc with_utls with_wireguard with_acme with_gvisor" -trimpath -ldflags "-X 'github.com/InazumaV/V2bX/cmd.version=$version' -s -w -buildid="
+          # Go 1.26's linker tightened //go:linkname enforcement. wlynxg/anet
+          # (transitively pulled in by tailscale/sing-quic/sing-tun) uses
+          # //go:linkname to reach into the standard net package's private
+          # zoneCache on platforms that lack a public netlink API — including
+          # android. The current anet release (v0.0.5) has no fix; upstream
+          # issue #11 (open since 2025-10) tracks it. Tailscale and Syncthing
+          # both ship Android binaries by passing -checklinkname=0 to the
+          # linker. We scope the flag to GOOS=android so every other matrix
+          # target keeps the strict default.
+          EXTRA_LDFLAGS=""
+          if [ "$GOOS" = "android" ]; then
+            EXTRA_LDFLAGS="-checklinkname=0"
+          fi
+          GOEXPERIMENT=jsonv2 go build -v -o build_assets/V2bX -tags "sing xray hysteria2 with_quic with_grpc with_utls with_wireguard with_acme with_gvisor" -trimpath -ldflags "-X 'github.com/InazumaV/V2bX/cmd.version=$version' -s -w -buildid= $EXTRA_LDFLAGS"
 
       - name: Build Mips softfloat V2bX
         if: matrix.goarch == 'mips' || matrix.goarch == 'mipsle'
         run: |
           echo "version: $version"
-          GOEXPERIMENT=jsonv2 GOMIPS=softfloat go build -v -o build_assets/V2bX_softfloat -tags "sing xray hysteria2 with_quic with_grpc with_utls with_wireguard with_acme with_gvisor" -trimpath -ldflags "-X 'github.com/InazumaV/V2bX/cmd.version=$version' -s -w -buildid="
+          # mips never sets GOOS=android, so EXTRA_LDFLAGS will stay empty
+          # here; kept symmetric with the main step for clarity.
+          EXTRA_LDFLAGS=""
+          if [ "$GOOS" = "android" ]; then
+            EXTRA_LDFLAGS="-checklinkname=0"
+          fi
+          GOEXPERIMENT=jsonv2 GOMIPS=softfloat go build -v -o build_assets/V2bX_softfloat -tags "sing xray hysteria2 with_quic with_grpc with_utls with_wireguard with_acme with_gvisor" -trimpath -ldflags "-X 'github.com/InazumaV/V2bX/cmd.version=$version' -s -w -buildid= $EXTRA_LDFLAGS"
       - name: Rename Windows V2bX
         if: matrix.goos == 'windows'
         run: |

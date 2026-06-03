@@ -462,7 +462,15 @@ func buildHysteria2(nodeInfo *panel.NodeInfo, inbound *coreConf.InboundDetourCon
 		}
 	}
 	if s.ObfsType != "" && s.ObfsPassword != "" {
-		rawobfsJSON := json.RawMessage(fmt.Sprintf(`{"password":"%s"}`, s.ObfsPassword))
+		// W4.4 / audit #7: build the obfs settings via json.Marshal instead
+		// of fmt.Sprintf, otherwise a panel-controlled password containing
+		// `"`, `\`, or `"}{"...` would inject arbitrary JSON fields into the
+		// xray config (or break parsing entirely → DoS).
+		obfsSettings, mErr := json.Marshal(map[string]string{"password": s.ObfsPassword})
+		if mErr != nil {
+			return fmt.Errorf("marshal obfs settings error: %s", mErr)
+		}
+		rawobfsJSON := json.RawMessage(obfsSettings)
 		udp := []coreConf.Mask{
 			{
 				Type:     s.ObfsType,

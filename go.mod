@@ -3,8 +3,8 @@ module github.com/InazumaV/V2bX
 go 1.26
 
 require (
-	github.com/apernet/hysteria/core/v2 v2.7.1
-	github.com/apernet/hysteria/extras/v2 v2.7.1
+	github.com/apernet/hysteria/core/v2 v2.9.2
+	github.com/apernet/hysteria/extras/v2 v2.9.2
 	github.com/beevik/ntp v1.4.4-0.20240716062501-06ef196b89ec
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-acme/lego/v4 v4.25.2

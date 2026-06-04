@@ -110,7 +110,10 @@ func (h *HookServer) RoutedConnection(_ context.Context, conn net.Conn, m adapte
 		actual, _ := h.counter.LoadOrStore(m.Inbound, counter.NewTrafficCounter())
 		t = actual.(*counter.TrafficCounter)
 	}
-	conn = counter.NewConnCounter(conn, t.GetCounter(m.User))
+	// W6 fix-up: pass (parent, uuid) so the conn wrapper can MarkDirty on
+	// every byte movement — without this, sing users never appear in
+	// IterateDirty and their traffic is silently dropped by the report task.
+	conn = counter.NewConnCounter(conn, t, m.User)
 	return conn
 }
 
@@ -187,6 +190,7 @@ func (h *HookServer) RoutedPacketConnection(_ context.Context, conn N.PacketConn
 		actual, _ := h.counter.LoadOrStore(m.Inbound, counter.NewTrafficCounter())
 		t = actual.(*counter.TrafficCounter)
 	}
-	conn = counter.NewPacketConnCounter(conn, t.GetCounter(m.User))
+	// W6 fix-up: see TCP path comment above — same reason.
+	conn = counter.NewPacketConnCounter(conn, t, m.User)
 	return conn
 }

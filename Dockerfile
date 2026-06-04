@@ -1,5 +1,10 @@
 # Build go
-FROM golang:1.26.0-alpine AS builder
+# 1.26.4 covers all 17 reachable Go-stdlib advisories that govulncheck flags
+# at v1.26.0: net/textproto (GO-2026-5039), crypto/x509 (-5037/-4947/-4946/
+# -4866/-4600/-4599), crypto/tls (-4870), html/template (-4982/-4980/-4865/
+# -4603), net/http (-4918), net/http/httputil (-4976), net (-4971), os
+# (-4602), net/url (-4601). Keep this in sync with .github/workflows/release.yml.
+FROM golang:1.26.4-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 ENV CGO_ENABLED=0

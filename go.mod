@@ -1,6 +1,6 @@
 module github.com/InazumaV/V2bX
 
-go 1.26
+go 1.26.4
 
 require (
 	github.com/apernet/hysteria/core/v2 v2.9.2
@@ -18,7 +18,7 @@ require (
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	github.com/xtls/xray-core v1.260206.0
 	go.uber.org/zap v1.27.1
-	golang.org/x/crypto v0.51.0
+	golang.org/x/crypto v0.52.0
 	golang.org/x/sys v0.45.0
 	google.golang.org/protobuf v1.36.11
 )

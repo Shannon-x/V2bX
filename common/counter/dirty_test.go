@@ -1,6 +1,8 @@
 package counter
 
 import (
+	"io"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -53,6 +55,64 @@ func TestIterateDirtyClearsAndCollects(t *testing.T) {
 	})
 	if count != 1 || !seenBob {
 		t.Fatalf("expected exactly bob on second period, got count=%d seenBob=%v", count, seenBob)
+	}
+}
+
+// TestConnCounterMarksDirty pins the W6 post-revert regression: the sing
+// HookServer wraps the conn via NewConnCounter, and Read/Write MUST call
+// MarkDirty so the per-tag IterateDirty(reset) report path actually sees
+// these users. The earlier Wave 6 commit only bumped the atomic counters
+// and silently dropped sing traffic from every panel push.
+func TestConnCounterMarksDirty(t *testing.T) {
+	c := NewTrafficCounter()
+
+	// Use net.Pipe() to drive Read/Write through the real wrapper.
+	srv, cli := net.Pipe()
+	defer srv.Close()
+	defer cli.Close()
+
+	wrapped := NewConnCounter(srv, c, "sing-user")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 64)
+		_, _ = io.ReadFull(wrapped, buf[:5])
+	}()
+	_, _ = cli.Write([]byte("hello"))
+	<-done
+
+	// After exactly one Read, the user MUST appear in dirty.
+	var seenUser bool
+	c.IterateDirty(true, func(uuid string, ts *TrafficStorage) bool {
+		if uuid == "sing-user" && ts.UpCounter.Load() == 5 {
+			seenUser = true
+		}
+		return true
+	})
+	if !seenUser {
+		t.Fatalf("sing-user with 5 bytes UpCounter did NOT appear in IterateDirty — sing traffic would silently drop")
+	}
+
+	// And after the dirty clear, a second Read must re-add to dirty.
+	done2 := make(chan struct{})
+	go func() {
+		defer close(done2)
+		buf := make([]byte, 64)
+		_, _ = io.ReadFull(wrapped, buf[:3])
+	}()
+	_, _ = cli.Write([]byte("hi!"))
+	<-done2
+
+	seenUser = false
+	c.IterateDirty(true, func(uuid string, ts *TrafficStorage) bool {
+		if uuid == "sing-user" {
+			seenUser = true
+		}
+		return true
+	})
+	if !seenUser {
+		t.Fatal("second Read did not re-mark dirty — long-lived sing connections would only report once")
 	}
 }
 

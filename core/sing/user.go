@@ -180,6 +180,9 @@ func (b *Sing) ReturnUserTraffic(tag string, traffic []panel.UserTraffic) error 
 		ts := c.GetCounter(uuid)
 		ts.UpCounter.Add(ud[0])
 		ts.DownCounter.Add(ud[1])
+		// W6 fix-up: see xray equivalent. Without MarkDirty the restored
+		// traffic is invisible to the next IterateDirty(true) sweep.
+		c.MarkDirty(uuid)
 	}
 	return nil
 }

@@ -67,6 +67,9 @@ func (h *Hysteria2) ReturnUserTraffic(tag string, traffic []panel.UserTraffic) e
 		ts := c.GetCounter(uuid)
 		ts.UpCounter.Add(ud[0])
 		ts.DownCounter.Add(ud[1])
+		// W6 fix-up: see xray equivalent. MarkDirty is required so the
+		// next IterateDirty(true) sees the restored traffic.
+		c.MarkDirty(uuid)
 	}
 	return nil
 }

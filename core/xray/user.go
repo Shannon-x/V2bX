@@ -164,6 +164,11 @@ func (x *Xray) ReturnUserTraffic(tag string, traffic []panel.UserTraffic) error 
 		ts := c.GetCounter(email)
 		ts.UpCounter.Add(ud[0])
 		ts.DownCounter.Add(ud[1])
+		// W6 fix-up: re-mark dirty so the next IterateDirty(reset=true) call
+		// actually picks up the restored traffic. Without this, the W3.1
+		// backfill silently disappears (the user has zero "new" traffic
+		// since the failed push, so dirty stays clear).
+		c.MarkDirty(email)
 	}
 	return nil
 }

@@ -140,6 +140,20 @@ func TestMarkDirtyExternal(t *testing.T) {
 // TestIterateDirtyConcurrent stresses the dirty-set semantics under
 // concurrent Tx/Rx + IterateDirty(clear=true) — must not lose traffic
 // or panic.
+//
+// Historical context: this test reliably flaked under -count=20 with
+// `traffic loss: written=8000 read=799x` because (a) the drainer
+// goroutine could overlap with the main goroutine's final IterateDirty,
+// putting two IterateDirty(true) in flight at once, and more
+// fundamentally (b) the Load-then-Store sequence inside markDirty could
+// land in a sync.Map snapshot that the iterator was already Range-ing,
+// where sync.Map.Range explicitly permits the Store to be missed.
+//
+// Fix (a): drainer signals exit via drainerDone; main waits before its
+// own final drain so only one IterateDirty(true) is ever in flight.
+//
+// Fix (b): markDirty now verifies the dirty pointer hasn't changed and
+// re-Stores in the new live dirty if it has (see traffic.go).
 func TestIterateDirtyConcurrent(t *testing.T) {
 	c := NewTrafficCounter()
 	const (
@@ -161,7 +175,9 @@ func TestIterateDirtyConcurrent(t *testing.T) {
 	}
 	var sumRead atomic.Int64
 	stop := make(chan struct{})
+	drainerDone := make(chan struct{})
 	go func() {
+		defer close(drainerDone)
 		for {
 			select {
 			case <-stop:
@@ -176,6 +192,7 @@ func TestIterateDirtyConcurrent(t *testing.T) {
 	}()
 	wg.Wait()
 	close(stop)
+	<-drainerDone // single-IterateDirty invariant for the final drain
 	// Final drain — anything still dirty from the last write batch.
 	c.IterateDirty(true, func(_ string, ts *TrafficStorage) bool {
 		sumRead.Add(ts.DownCounter.Swap(0))

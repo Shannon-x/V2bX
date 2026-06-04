@@ -46,9 +46,36 @@ func (c *TrafficCounter) GetCounter(uuid string) *TrafficStorage {
 // markDirty records that this uuid received some traffic. Called from Rx/Tx
 // on the data hot path — must be cheap. sync.Map.Store on an already-present
 // key is a single atomic.Pointer load+compare, so amortised this is O(1).
+//
+// Concurrency contract — what the retry loop defends against:
+//
+// The naive "d := dirty.Load(); d.Store(uuid, _)" sequence is NOT a single
+// atomic op. If an IterateDirty(true) call slips between the Load and the
+// Store, our Store lands in a map that the iterator has already swapped
+// OUT and is now Range-ing as a snapshot. sync.Map.Range explicitly
+// documents that concurrent Stores during a Range may NOT be reflected —
+// so a worst-case interleaving leaves our mark in a discarded snapshot
+// while the live dirty (the one the iterator just installed) has no
+// record of our uuid. The traffic byte we just Added to ts.Down then has
+// no path to drain — silently lost, ~0.05% miss rate under contention.
+//
+// Fix: after Store, verify the dirty pointer hasn't changed. If it has,
+// the iterator may have already missed our store; re-Store in the new
+// live dirty. The loop runs at most ~"number of concurrent iterators"
+// times, which is 1 in practice (the report task).
 func (c *TrafficCounter) markDirty(uuid string) {
-	if d := c.dirty.Load(); d != nil {
+	for {
+		d := c.dirty.Load()
+		if d == nil {
+			return
+		}
 		d.Store(uuid, struct{}{})
+		if c.dirty.Load() == d {
+			return
+		}
+		// dirty pointer changed between our Load and our Store — an
+		// IterateDirty(true) swapped while we were mid-mark. Loop to mark
+		// in the new live dirty so the next iteration sees us.
 	}
 }
 

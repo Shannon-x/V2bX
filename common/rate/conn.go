@@ -13,18 +13,52 @@ import (
 // and ignored the WaitMaxDuration bool (which is set false when the wait
 // would have exceeded the cap). Net effect: per-user speed limiting was
 // effectively defeated for short transfers and bursts. Three independent
-// changes here restore proper shaping:
+// changes there restored proper shaping:
 //
 //  1. bucketQuantum = 10ms refills tokens at ~100 Hz instead of 1 Hz, so
 //     speeds match the configured Mbps over sub-second windows (no more
 //     1-second stair-step that stalled TLS handshakes and gRPC headers).
-//  2. The Wait happens BEFORE the underlying Read/Write call, so tokens
-//     gate the I/O rather than being debited after the fact (a "free first
-//     burst" was the most-visible symptom).
+//  2. The Wait happens BEFORE the underlying Write call, so tokens
+//     gate the I/O rather than being debited after the fact.
 //  3. Plain Wait (no max) replaces WaitMaxDuration so the limiter blocks
 //     even when the wait would be long, instead of silently letting the
 //     traffic through and never charging tokens for it.
+//
+// W6 follow-up: refinement to the Read path specifically. Pre-Read
+// Wait(len(b)) was over-debiting idle and short-read connections (a 32 KB
+// buffer on a 100 KB/s link forced a 320 ms wait even when the peer had
+// nothing to send right now, wasting ~28 KB of tokens every Read). Two
+// changes:
+//
+//  4. Read now charges tokens POST-I/O for the actual n bytes returned.
+//     Idle (n=0) costs nothing; short reads pay only what they got.
+//  5. Both Read and Write cap a single call to chunkSizeFor() bytes
+//     (~100 ms of rate budget, floored at 1 KB, ceiling 64 KB). An
+//     oversized buffer no longer translates to a single multi-second
+//     Wait — the work splits naturally across multiple I/O calls.
 const bucketQuantum = 10 * time.Millisecond
+
+// chunkSizeFor bounds a single Read/Write to roughly 100 ms of token
+// budget on the given bucket. Floor 1 KB so even very low-rate users
+// make some forward progress per call; ceiling 64 KB so high-rate users
+// don't blow up syscall overhead.
+//
+// W6 follow-up: avoids "a 256 KB buffer on a 1 KB/s rate limit blocks
+// Read() for 256 seconds" pathology.
+func chunkSizeFor(b *ratelimit.Bucket) int {
+	const (
+		minChunk = 1 << 10  // 1 KB
+		maxChunk = 64 << 10 // 64 KB
+	)
+	chunk := int(b.Capacity() / 10)
+	if chunk < minChunk {
+		return minChunk
+	}
+	if chunk > maxChunk {
+		return maxChunk
+	}
+	return chunk
+}
 
 // DynamicBucket supports atomic hot-swap of rate limit bucket.
 // All connections sharing the same DynamicBucket will see updated rates
@@ -74,21 +108,46 @@ type Conn struct {
 }
 
 func (c *Conn) Read(b []byte) (n int, err error) {
-	// W3.5: gate I/O on tokens — match v2node's pre-read Wait semantics. The
-	// pre-charge is the maximum we could read; if the underlying Read returns
-	// fewer bytes we over-debit by the difference, which is a small bias
-	// in favour of the limit (acceptable for a rate cap).
-	if l := c.limiter.Get(); l != nil && len(b) > 0 {
-		l.Wait(int64(len(b)))
+	// W6 follow-up: post-Read accounting (charge for bytes actually read,
+	// not buffer length) + chunk cap to bound per-call latency. See the
+	// const-block doc above for the full rationale. Idle peers (n == 0)
+	// cost nothing; slow peers pay only for what they delivered.
+	target := b
+	l := c.limiter.Get()
+	if l != nil && len(target) > 0 {
+		if chunk := chunkSizeFor(l); chunk < len(target) {
+			target = target[:chunk]
+		}
 	}
-	return c.Conn.Read(b)
+	n, err = c.Conn.Read(target)
+	if n > 0 && l != nil {
+		l.Wait(int64(n))
+	}
+	return n, err
 }
 
 func (c *Conn) Write(b []byte) (n int, err error) {
-	// W3.5: charge tokens before sending so a slow consumer cannot drain the
-	// peer pipe in one burst.
-	if l := c.limiter.Get(); l != nil && len(b) > 0 {
-		l.Wait(int64(len(b)))
+	// W3.5 + W6 follow-up: still token-gate the write (pre-I/O Wait), but
+	// chunk through the buffer so an oversized b can't induce a single
+	// multi-second Wait on a low-rate connection. io.Writer's "wrote all
+	// of b or returned an error" contract is preserved by the for-loop.
+	l := c.limiter.Get()
+	if l == nil {
+		return c.Conn.Write(b)
 	}
-	return c.Conn.Write(b)
+	chunk := chunkSizeFor(l)
+	for n < len(b) {
+		end := n + chunk
+		if end > len(b) {
+			end = len(b)
+		}
+		piece := b[n:end]
+		l.Wait(int64(len(piece)))
+		written, werr := c.Conn.Write(piece)
+		n += written
+		if werr != nil {
+			return n, werr
+		}
+	}
+	return n, nil
 }

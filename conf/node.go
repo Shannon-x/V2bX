@@ -35,6 +35,26 @@ const (
 // isUnsafeIP rejects any address that points at loopback, private RFC1918,
 // link-local, multicast, or the unspecified ranges. v4-mapped v6 addresses
 // are checked in both their v6 and underlying v4 form.
+// extraUnsafeCIDRs covers ranges the stdlib predicates miss but that are
+// still dangerous SSRF targets. W6 review #13:
+//   - 0.0.0.0/8     "this host" — on Linux routes to localhost.
+//   - 100.64.0.0/10 CGNAT (RFC 6598) — carrier-internal, reachable hosts.
+//   - 192.0.0.0/24  IETF protocol assignments.
+//   - 198.18.0.0/15 benchmarking (RFC 2544).
+//   - 240.0.0.0/4   reserved / "future use".
+var extraUnsafeCIDRs = func() []*net.IPNet {
+	cidrs := []string{
+		"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "198.18.0.0/15", "240.0.0.0/4",
+	}
+	out := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		if _, n, err := net.ParseCIDR(c); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}()
+
 func isUnsafeIP(ip net.IP) bool {
 	if ip == nil {
 		return true
@@ -42,8 +62,15 @@ func isUnsafeIP(ip net.IP) bool {
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsInterfaceLocalMulticast() {
 		return true
 	}
-	if v4 := ip.To4(); v4 != nil && !v4.Equal(ip) {
-		return isUnsafeIP(v4)
+	if v4 := ip.To4(); v4 != nil {
+		for _, n := range extraUnsafeCIDRs {
+			if n.Contains(v4) {
+				return true
+			}
+		}
+		if !v4.Equal(ip) {
+			return isUnsafeIP(v4)
+		}
 	}
 	return false
 }

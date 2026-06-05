@@ -17,6 +17,40 @@ import (
 	coreConf "github.com/xtls/xray-core/infra/conf"
 )
 
+// customOutboundDefaultAllowed gates the panel-supplied default_out JSON
+// through the same CustomOutbound policy as the per-route custom outbounds.
+// W6 review #3. Returns true only if custom outbound loading is enabled AND
+// the default_out's protocol is permitted by the (opt-in) whitelist. On a
+// parse failure it returns false (fall back to freedom) rather than loading
+// an unverifiable outbound.
+func customOutboundDefaultAllowed(config *conf.Options, rawJSON string) bool {
+	var cfg *conf.CustomOutboundConfig
+	if config != nil {
+		cfg = config.CustomOutbound
+	}
+	if !conf.IsCustomOutboundEnabled(cfg) {
+		log.Warn("default_out custom outbound rejected: CustomOutbound.Enabled=false")
+		return false
+	}
+	probe := &coreConf.OutboundDetourConfig{}
+	if err := json.Unmarshal([]byte(rawJSON), probe); err != nil {
+		log.Warnf("default_out custom outbound rejected: unparseable JSON: %v", err)
+		return false
+	}
+	proto := strings.ToLower(probe.Protocol)
+	if !conf.IsCustomOutboundAllowed(cfg, proto) {
+		log.Warnf("default_out custom outbound rejected: protocol %q not in CustomOutbound.AllowedProtocols=%v (falling back to freedom)",
+			proto, func() []string {
+				if cfg != nil {
+					return cfg.AllowedProtocols
+				}
+				return nil
+			}())
+		return false
+	}
+	return true
+}
+
 type DNSConfig struct {
 	Servers []interface{} `json:"servers"`
 	Tag     string        `json:"tag"`
@@ -47,7 +81,12 @@ func (c *Xray) AddNode(tag string, info *panel.NodeInfo, config *conf.Options) e
 
 	// Build outbound: use custom default_out if configured, otherwise freedom
 	var outBoundConfig *core.OutboundHandlerConfig
-	if info.Rules.RawDefaultOut != "" {
+	// W6 review #3: default_out is the highest-value egress sink (all traffic
+	// for the tag), so it MUST pass the same CustomOutbound policy gate as the
+	// per-route custom outbounds in AddNodeCustomOutbounds. Previously it was
+	// loaded unconditionally here, letting a panel-pushed RawDefaultOut bypass
+	// CustomOutbound.Enabled=false and the AllowedProtocols whitelist entirely.
+	if info.Rules.RawDefaultOut != "" && customOutboundDefaultAllowed(config, info.Rules.RawDefaultOut) {
 		// Panel provided a full custom outbound JSON (e.g. SOCKS proxy)
 		outBoundConfig, err = buildCustomOutbound(info.Rules.RawDefaultOut, tag)
 		if err != nil {

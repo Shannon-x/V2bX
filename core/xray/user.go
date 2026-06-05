@@ -109,9 +109,15 @@ func (x *Xray) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 					c.Delete(email)
 					return true
 				}
-				// Below threshold, add back to avoid losing small amounts
+				// Below threshold, add back to avoid losing small amounts.
+				// W6 follow-up #2: MUST re-mark dirty — IterateDirty(true)
+				// already swapped the dirty map to empty, so without this the
+				// added-back bytes are stranded and never reported until the
+				// user happens to send more traffic. Mirrors the ReturnUserTraffic
+				// backfill fix.
 				traffic.UpCounter.Add(up)
 				traffic.DownCounter.Add(down)
+				c.MarkDirty(email)
 			} else if reset && up == 0 && down == 0 {
 				// Completely idle entry — clean up if user is no longer active
 				if x.users.uidMap[email] == 0 {
@@ -122,6 +128,12 @@ func (x *Xray) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 		}
 		// W6 / B3: walk dirty-set instead of the full Counters map.
 		c.IterateDirty(reset, walk)
+		// W6 review #5: occasional full sweep to reclaim orphan TrafficStorage
+		// for users that left uidMap and went idle (the dirty path never
+		// revisits them). Only on report periods (reset) and only every Nth.
+		if reset {
+			c.MaybePruneIdle(func(email string) bool { return x.users.uidMap[email] != 0 })
+		}
 		if len(trafficSlice) == 0 {
 			return nil, nil
 		}

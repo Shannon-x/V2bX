@@ -239,8 +239,11 @@ func (b *Sing) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 					c.Delete(uuid)
 					return true
 				}
+				// W6 follow-up #2: re-mark dirty so the added-back bytes are
+				// revisited next period (see xray equivalent for rationale).
 				traffic.UpCounter.Add(up)
 				traffic.DownCounter.Add(down)
+				c.MarkDirty(uuid)
 			} else if reset && up == 0 && down == 0 {
 				if b.users.uidMap[uuid] == 0 {
 					c.Delete(uuid)
@@ -249,6 +252,10 @@ func (b *Sing) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 			return true
 		}
 		c.IterateDirty(reset, walk)
+		// W6 review #5: occasional orphan sweep (see xray equivalent).
+		if reset {
+			c.MaybePruneIdle(func(uuid string) bool { return b.users.uidMap[uuid] != 0 })
+		}
 		if len(trafficSlice) == 0 {
 			return nil, nil
 		}

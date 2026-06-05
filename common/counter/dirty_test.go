@@ -8,6 +8,54 @@ import (
 	"testing"
 )
 
+// TestPruneIdleReclaimsOrphans is the W6 review #5 regression: an entry
+// that left uidMap (keep returns false) and holds zero bytes must be
+// reclaimed by PruneIdle, while an entry that is kept OR still holds bytes
+// must survive.
+func TestPruneIdleReclaimsOrphans(t *testing.T) {
+	c := NewTrafficCounter()
+	// orphan-idle: not kept, zero bytes → should be deleted
+	c.GetCounter("orphan-idle")
+	// orphan-with-bytes: not kept but has pending bytes → must survive
+	bts := c.GetCounter("orphan-bytes")
+	bts.UpCounter.Store(123)
+	// active: kept → must survive regardless
+	c.GetCounter("active")
+
+	keep := map[string]bool{"active": true}
+	c.PruneIdle(func(uuid string) bool { return keep[uuid] })
+
+	if _, ok := c.Counters.Load("orphan-idle"); ok {
+		t.Error("orphan-idle should have been pruned")
+	}
+	if _, ok := c.Counters.Load("orphan-bytes"); !ok {
+		t.Error("orphan-bytes has pending traffic — must NOT be pruned")
+	}
+	if _, ok := c.Counters.Load("active"); !ok {
+		t.Error("active user must NOT be pruned")
+	}
+}
+
+// TestMaybePruneIdleCadence verifies MaybePruneIdle only sweeps every
+// PruneEveryN calls.
+func TestMaybePruneIdleCadence(t *testing.T) {
+	c := NewTrafficCounter()
+	c.GetCounter("orphan")
+	keepNone := func(string) bool { return false }
+	// First PruneEveryN-1 calls must NOT prune.
+	for i := 0; i < PruneEveryN-1; i++ {
+		c.MaybePruneIdle(keepNone)
+	}
+	if _, ok := c.Counters.Load("orphan"); !ok {
+		t.Fatal("orphan pruned too early — cadence broken")
+	}
+	// The PruneEveryN-th call triggers the sweep.
+	c.MaybePruneIdle(keepNone)
+	if _, ok := c.Counters.Load("orphan"); ok {
+		t.Fatal("orphan should have been pruned on the Nth call")
+	}
+}
+
 // TestIterateDirtyClearsAndCollects validates the W6 / B3 dirty-set
 // semantics. Without it the counter would Range the full Counters map
 // every period; with it only users that actually had traffic this period

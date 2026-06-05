@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -95,6 +96,20 @@ func (t *Task) executeWithTimeout() error {
 
 	done := make(chan error, 1)
 	go func() {
+		// W6 review #15: the outer scheduler goroutine's recover does NOT
+		// cover this inner goroutine. Without this defer, a panic in
+		// Execute/ExecuteCtx (e.g. an unexpected type assertion deep in the
+		// report path) would crash the whole process instead of failing just
+		// this cycle. Convert the panic into an error on the done channel.
+		defer func() {
+			if r := recover(); r != nil {
+				log.Errorf("Task %s panicked: %v", t.Name, r)
+				select {
+				case done <- fmt.Errorf("task %s panic: %v", t.Name, r):
+				default:
+				}
+			}
+		}()
 		if t.ExecuteCtx != nil {
 			done <- t.ExecuteCtx(ctx)
 			return

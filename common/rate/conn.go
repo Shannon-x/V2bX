@@ -2,6 +2,7 @@ package rate
 
 import (
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -99,12 +100,48 @@ func NewConnRateLimiter(c net.Conn, l *DynamicBucket) *Conn {
 	return &Conn{
 		Conn:    c,
 		limiter: l,
+		done:    make(chan struct{}),
 	}
 }
 
 type Conn struct {
 	net.Conn
-	limiter *DynamicBucket
+	limiter  *DynamicBucket
+	done     chan struct{}
+	doneOnce sync.Once
+}
+
+// Close signals the done channel so any in-flight rate Wait is interrupted,
+// then closes the underlying conn.
+//
+// W6 review #14: the previous bare l.Wait(n) used juju's uninterruptible
+// time.Sleep. When the peer vanished mid-transfer, the goroutine + FD + the
+// upstream transport.Link stayed pinned for the FULL token wait (seconds to
+// minutes on a low SpeedLimit), accumulating half-closed sockets in
+// FIN-WAIT-2 / CLOSE_WAIT. waitTokens below now blocks in a select on a
+// timer AND this done channel, so Close() releases the wait immediately.
+func (c *Conn) Close() error {
+	c.doneOnce.Do(func() { close(c.done) })
+	return c.Conn.Close()
+}
+
+// waitTokens removes n tokens and blocks for the resulting duration, but
+// aborts early if the conn is closed. Take() has already debited the tokens
+// (so the rate accounting stays correct even on early abort).
+func (c *Conn) waitTokens(l *ratelimit.Bucket, n int64) {
+	if n <= 0 {
+		return
+	}
+	d := l.Take(n)
+	if d <= 0 {
+		return
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-c.done:
+	}
 }
 
 func (c *Conn) Read(b []byte) (n int, err error) {
@@ -121,7 +158,7 @@ func (c *Conn) Read(b []byte) (n int, err error) {
 	}
 	n, err = c.Conn.Read(target)
 	if n > 0 && l != nil {
-		l.Wait(int64(n))
+		c.waitTokens(l, int64(n))
 	}
 	return n, err
 }
@@ -142,7 +179,7 @@ func (c *Conn) Write(b []byte) (n int, err error) {
 			end = len(b)
 		}
 		piece := b[n:end]
-		l.Wait(int64(len(piece)))
+		c.waitTokens(l, int64(len(piece)))
 		written, werr := c.Conn.Write(piece)
 		n += written
 		if werr != nil {

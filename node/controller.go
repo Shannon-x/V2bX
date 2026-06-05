@@ -3,6 +3,7 @@ package node
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -77,9 +78,41 @@ func (c *Controller) Start() error {
 	} else {
 		c.tag = c.Options.Name
 	}
+	// W6 review #6: the per-user key is format.UserTag(tag,uuid) = "tag|uuid".
+	// A tag containing "|" corrupts every tag/uuid split — including the
+	// DelNode prefix-scan that reclaims LinkManagers (it would mis-match a
+	// sibling node's keys or fail to match its own, leaking ManagedWriters).
+	// Reject such a tag up front rather than corrupting state.
+	if strings.Contains(c.tag, "|") {
+		return fmt.Errorf("node tag %q must not contain '|' (reserved as the tag/uuid separator)", c.tag)
+	}
+
+	// W6 review #1: self-rollback. Once we register the limiter and bring up
+	// the inbound listener (AddNode), a later failure (AddUsers, etc.) used to
+	// return without undoing them — leaving an orphan listener accepting
+	// connections that nothing would ever tear down (the outer node.Start
+	// rollback only Closes controllers it already appended, not this failing
+	// one). Track what we registered and unwind on any error path.
+	limiterAdded := false
+	nodeAdded := false
+	started := false
+	defer func() {
+		if started {
+			return
+		}
+		if nodeAdded {
+			if derr := c.server.DelNode(c.tag); derr != nil {
+				log.WithField("tag", c.tag).Warnf("rollback DelNode error: %v", derr)
+			}
+		}
+		if limiterAdded {
+			limiter.DeleteLimiter(c.tag)
+		}
+	}()
 
 	// add limiter
 	l := limiter.AddLimiter(node.Type, c.tag, &c.LimitConfig, c.userList, c.aliveMap)
+	limiterAdded = true
 	// add rule limiter
 	if err = l.UpdateRule(&node.Rules); err != nil {
 		return fmt.Errorf("update rule error: %s", err)
@@ -96,6 +129,7 @@ func (c *Controller) Start() error {
 	if err != nil {
 		return fmt.Errorf("add new node error: %s", err)
 	}
+	nodeAdded = true
 
 	err = c.server.AddNodeCustomOutbounds(node, c.Options)
 	if err != nil {
@@ -113,6 +147,7 @@ func (c *Controller) Start() error {
 	log.WithField("tag", c.tag).Infof("Added %d new users", added)
 	c.info.Store(node)
 	c.startTasks(node)
+	started = true // success — disarm the rollback defer
 	return nil
 }
 

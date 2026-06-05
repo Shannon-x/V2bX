@@ -147,8 +147,10 @@ func (h *Hysteria2) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTra
 					c.Delete(uuid)
 					return true
 				}
+				// W6 follow-up #2: re-mark dirty (see xray equivalent).
 				traffic.UpCounter.Add(up)
 				traffic.DownCounter.Add(down)
+				c.MarkDirty(uuid)
 			} else if h.Auth.usersMap[uuid] == 0 {
 				// Deleted user with zero traffic: clean up the idle entry
 				c.Delete(uuid)
@@ -156,6 +158,11 @@ func (h *Hysteria2) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTra
 			return true
 		}
 		c.IterateDirty(reset, walk)
+		// W6 review #5: occasional orphan sweep (see xray equivalent).
+		// h.Auth.mutex is already held (RLock) for this whole function.
+		if reset {
+			c.MaybePruneIdle(func(uuid string) bool { return h.Auth.usersMap[uuid] != 0 })
+		}
 		if len(trafficSlice) == 0 {
 			return nil, nil
 		}

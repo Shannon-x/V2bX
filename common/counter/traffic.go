@@ -19,6 +19,10 @@ type TrafficCounter struct {
 	// worst case the dirty mark lands in the new map and is collected
 	// next period.
 	dirty atomic.Pointer[sync.Map]
+
+	// W6 review #5: counts report periods so MaybePruneIdle can run a full
+	// orphan sweep only every Nth period instead of every period.
+	pruneTick atomic.Int64
 }
 
 type TrafficStorage struct {
@@ -116,6 +120,49 @@ func (c *TrafficCounter) IterateDirty(clear bool, fn func(uuid string, cts *Traf
 		}
 		return fn(uuid, v.(*TrafficStorage))
 	})
+}
+
+// PruneIdle does a full Counters.Range and deletes every entry for which
+// keep(uuid) returns false AND the entry currently holds zero bytes. The
+// zero-byte guard means an entry that is mid-accounting (has pending traffic
+// not yet reported) is never dropped — only genuinely idle orphans go.
+//
+// W6 review #5: the dirty-set fast path (IterateDirty) only ever visits
+// users who sent traffic THIS period, so a "was active → removed from
+// uidMap → went idle" user's TrafficStorage would otherwise live forever
+// (the per-period cleanup branches only run for dirty users). Callers run
+// this occasionally (every N report periods) to restore the full-Range GC
+// guarantee that the pre-dirty-set code had, without paying it every period.
+func (c *TrafficCounter) PruneIdle(keep func(uuid string) bool) {
+	c.Counters.Range(func(k, v interface{}) bool {
+		uuid, ok := k.(string)
+		if !ok {
+			return true
+		}
+		if keep(uuid) {
+			return true
+		}
+		ts := v.(*TrafficStorage)
+		if ts.UpCounter.Load() == 0 && ts.DownCounter.Load() == 0 {
+			c.Counters.Delete(uuid)
+		}
+		return true
+	})
+}
+
+// PruneEveryN is how many report periods elapse between full orphan sweeps.
+// At a typical 60s PushInterval this is one sweep per hour — cheap enough to
+// not matter, frequent enough to bound orphan accumulation.
+const PruneEveryN = 60
+
+// MaybePruneIdle runs PruneIdle once every PruneEveryN calls. Intended to be
+// called once per report period (reset=true) from GetUserTrafficSlice.
+// W6 review #5.
+func (c *TrafficCounter) MaybePruneIdle(keep func(uuid string) bool) {
+	if c.pruneTick.Add(1)%PruneEveryN != 0 {
+		return
+	}
+	c.PruneIdle(keep)
 }
 
 func (c *TrafficCounter) GetUpCount(uuid string) int64 {

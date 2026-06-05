@@ -1,28 +1,60 @@
 package rate
 
 import (
+	"sync"
+	"time"
+
+	"github.com/juju/ratelimit"
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 )
 
 type Writer struct {
-	writer  buf.Writer
-	limiter *DynamicBucket
+	writer   buf.Writer
+	limiter  *DynamicBucket
+	done     chan struct{}
+	doneOnce sync.Once
 }
 
 func NewRateLimitWriter(writer buf.Writer, limiter *DynamicBucket) buf.Writer {
 	return &Writer{
 		writer:  writer,
 		limiter: limiter,
+		done:    make(chan struct{}),
 	}
 }
 
+func (w *Writer) signalDone() {
+	w.doneOnce.Do(func() { close(w.done) })
+}
+
 func (w *Writer) Close() error {
+	w.signalDone()
 	return common.Close(w.writer)
 }
 
 func (w *Writer) Interrupt() {
+	w.signalDone()
 	common.Interrupt(w.writer)
+}
+
+// waitTokens is the interruptible token wait — see Conn.waitTokens.
+// W6 review #14: on Close/Interrupt the in-flight rate wait aborts instead
+// of pinning the upstream link for the full token duration.
+func (w *Writer) waitTokens(l *ratelimit.Bucket, n int64) {
+	if n <= 0 {
+		return
+	}
+	d := l.Take(n)
+	if d <= 0 {
+		return
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-w.done:
+	}
 }
 
 func (w *Writer) WriteMultiBuffer(mb buf.MultiBuffer) error {
@@ -61,7 +93,7 @@ func (w *Writer) WriteMultiBuffer(mb buf.MultiBuffer) error {
 		batch := mb[:split]
 		mb = mb[split:]
 		if batchLen > 0 {
-			limiter.Wait(int64(batchLen))
+			w.waitTokens(limiter, int64(batchLen))
 		}
 		if err := w.writer.WriteMultiBuffer(batch); err != nil {
 			// On error, release any buffers we haven't handed off yet —

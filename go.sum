@@ -1201,8 +1201,8 @@ github.com/vultr/govultr/v3 v3.21.1 h1:0cnA8fXiqayPGbAlNHaW+5oCQjpDNkkAm3Nt3LOHp
 github.com/vultr/govultr/v3 v3.21.1/go.mod h1:9WwnWGCKnwDlNjHjtt+j+nP+0QWq6hQXzaHgddqrLWY=
 github.com/wlynxg/anet v0.0.5 h1:J3VJGi1gvo0JwZ/P1/Yc/8p63SoW98B5dHkYDmpgvvU=
 github.com/wlynxg/anet v0.0.5/go.mod h1:eay5PRQr7fIVAMbTbchTnO9gG65Hg/uYGdc7mguHxoA=
-github.com/wyx2685/xray-core v0.0.0-20260601140735-13357f3bc706 h1:6SbYW9BsAPcMuetTRhDKRJtQKU3CGljx/z/rvsa+nac=
-github.com/wyx2685/xray-core v0.0.0-20260601140735-13357f3bc706/go.mod h1:IwhelaCHN5m1k7R4n7Z5SJWvQGXv63UtsGdPY8X+VKI=
+github.com/wyx2685/xray-core v0.0.0-20260621190510-a0fed07518ed h1:023qMg5CragB+HzDLSiGRAZlYiZ+qnl9HSja2b52XPE=
+github.com/wyx2685/xray-core v0.0.0-20260621190510-a0fed07518ed/go.mod h1:IwhelaCHN5m1k7R4n7Z5SJWvQGXv63UtsGdPY8X+VKI=
 github.com/x448/float16 v0.8.4 h1:qLwI1I70+NjRFUR3zs1JPUCgaCXSh3SW62uAKT1mSBM=
 github.com/x448/float16 v0.8.4/go.mod h1:14CWIYCyZA/cWjXOioeEpHeN/83MdbZDRQHoFcYsOfg=
 github.com/xdg-go/pbkdf2 v1.0.0/go.mod h1:jrpuAogTd400dnrH08LKmI/xc1MbPOebTwRqcT5RDeI=

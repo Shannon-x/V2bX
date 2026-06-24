@@ -11,7 +11,7 @@ require (
 	github.com/go-resty/resty/v2 v2.16.5
 	github.com/juju/ratelimit v1.0.2
 	github.com/sagernet/sing v0.8.10
-	github.com/sagernet/sing-box v1.13.13
+	github.com/sagernet/sing-box v1.13.12
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.19.0
@@ -269,7 +269,7 @@ require (
 	github.com/sagernet/sing-shadowsocks v0.2.8 // indirect
 	github.com/sagernet/sing-shadowsocks2 v0.2.1 // indirect
 	github.com/sagernet/sing-shadowtls v0.2.1-0.20250503051639-fcd445d33c11 // indirect
-	github.com/sagernet/sing-tun v0.8.10-0.20260603023501-3b51857024d0 // indirect
+	github.com/sagernet/sing-tun v0.8.9 // indirect
 	github.com/sagernet/sing-vmess v0.2.8-0.20250909125414-3aed155119a1 // indirect
 	github.com/sagernet/smux v1.5.50-sing-box-mod.1 // indirect
 	github.com/sagernet/tailscale v1.92.4-sing-box-1.13-mod.7 // indirect

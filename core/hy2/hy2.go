@@ -79,6 +79,12 @@ func (h *Hysteria2) Type() string {
 	return "hysteria2"
 }
 
+// UpdateDNS is a no-op for hy2: DNS-unlock routing is an xray-core feature.
+// Implemented to satisfy the vCore.Core interface.
+func (h *Hysteria2) UpdateDNS(tag string, info *panel.NodeInfo) error {
+	return nil
+}
+
 // UpdateNodeReportMinTraffic refreshes the per-node minimum-traffic threshold
 // used to filter ReportUserTraffic payloads. Mirrors the Xray equivalent.
 //

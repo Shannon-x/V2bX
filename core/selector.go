@@ -157,6 +157,14 @@ func (s *Selector) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, 
 	t.(Core).UpdateNodeReportMinTraffic(tag, info, config)
 }
 
+func (s *Selector) UpdateDNS(tag string, info *panel.NodeInfo) error {
+	t, e := s.nodes.Load(tag)
+	if !e {
+		return errors.New("the node is not have")
+	}
+	return t.(Core).UpdateDNS(tag, info)
+}
+
 func (s *Selector) AddNodeCustomOutbounds(info *panel.NodeInfo, opts *conf.Options) error {
 	var errs []error
 	for _, core := range s.cores {

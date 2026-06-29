@@ -128,6 +128,18 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 		// Update nodeReportMinTraffic in core
 		c.server.UpdateNodeReportMinTraffic(c.tag, newN, c.Options)
 
+		// Re-apply panel DNS-unlock routes on hot reload so editing a DNS route
+		// in the panel takes effect without restarting V2bX. For xray this
+		// re-renders the DNS file (no-op when RawDNS is unchanged, thanks to the
+		// bytes.Equal guard in saveDnsConfig); the config watcher then reloads.
+		// Closes the gap where updateDNSConfig only ran on initial AddNode.
+		if err = c.server.UpdateDNS(c.tag, newN); err != nil {
+			log.WithFields(log.Fields{
+				"tag": c.tag,
+				"err": err,
+			}).Error("Update DNS failed")
+		}
+
 		// Check interval changes
 		if c.nodeInfoMonitorPeriodic.Interval != newN.PullInterval &&
 			newN.PullInterval != 0 {

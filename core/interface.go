@@ -28,6 +28,14 @@ type Core interface {
 	ReturnUserTraffic(tag string, traffic []panel.UserTraffic) error
 	DelUsers(users []panel.UserInfo, tag string, info *panel.NodeInfo) error
 	UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, config *conf.Options)
+	// UpdateDNS re-applies the panel-pushed DNS-unlock routes (info.RawDNS) to
+	// the running core during a hot config reload, so editing a DNS route in the
+	// panel takes effect without a full process restart. Only the xray core does
+	// real work; hy2/sing are no-ops. The xray implementation re-renders the DNS
+	// file (deduped via bytes.Equal in saveDnsConfig), and the config watcher
+	// picks up the change to reload — closing the gap where DNS routes only
+	// applied on initial AddNode and were ignored on every later panel edit.
+	UpdateDNS(tag string, info *panel.NodeInfo) error
 	// AddNodeCustomOutbounds loads panel-supplied raw outbound JSON, filtered
 	// by the deployer-controlled CustomOutbound policy in `opts`. W6 / audit
 	// #8: `opts` was added so the implementation can consult the trust

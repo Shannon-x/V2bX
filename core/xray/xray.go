@@ -3,6 +3,7 @@ package xray
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"encoding/json/v2"
@@ -84,20 +85,29 @@ func getCore(c *conf.XrayConfig) *core.Instance {
 	}
 	// DNS config
 	coreDnsConfig := &coreConf.DNSConfig{}
-	os.Setenv("XRAY_DNS_PATH", "")
-	if c.DnsConfigPath != "" {
-		data, err := os.ReadFile(c.DnsConfigPath)
-		if err != nil {
-			log.Error(fmt.Sprintf("Failed to read xray dns config file: %v", err))
-			coreDnsConfig = &coreConf.DNSConfig{}
-		} else {
-			if err := json.Unmarshal(data, coreDnsConfig); err != nil {
-				log.Error(fmt.Sprintf("Failed to unmarshal xray dns config: %v. Using default DNS options.", err))
-				coreDnsConfig = &coreConf.DNSConfig{}
-			}
-		}
-		os.Setenv("XRAY_DNS_PATH", c.DnsConfigPath)
+	// Panel-pushed DNS-unlock routes are rendered into this file by
+	// updateDNSConfig and hot-reloaded via the config watcher. Previously
+	// DnsConfigPath defaulted to "" which left XRAY_DNS_PATH empty, so
+	// updateDNSConfig's os.ReadFile("") failed ("Failed to read XRAY_DNS_PATH:
+	// open : no such file") and EVERY panel DNS rule was silently dropped.
+	// Default to <AssetPath>/dns.json so the feature works without the operator
+	// having to manually set DnsConfigPath.
+	dnsPath := c.DnsConfigPath
+	if dnsPath == "" {
+		dnsPath = filepath.Join(c.AssetPath, "dns.json")
 	}
+	if data, err := os.ReadFile(dnsPath); err != nil {
+		// A missing file is expected on first run — updateDNSConfig will create
+		// it. Only surface the error when the operator explicitly set a path.
+		if c.DnsConfigPath != "" {
+			log.Error(fmt.Sprintf("Failed to read xray dns config file: %v", err))
+		}
+		coreDnsConfig = &coreConf.DNSConfig{}
+	} else if err := json.Unmarshal(data, coreDnsConfig); err != nil {
+		log.Error(fmt.Sprintf("Failed to unmarshal xray dns config: %v. Using default DNS options.", err))
+		coreDnsConfig = &coreConf.DNSConfig{}
+	}
+	os.Setenv("XRAY_DNS_PATH", dnsPath)
 	dnsConfig, err := coreDnsConfig.Build()
 	if err != nil {
 		log.WithField("err", err).Panic("Failed to understand DNS config, Please check: https://xtls.github.io/config/dns.html for help")

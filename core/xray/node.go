@@ -125,6 +125,14 @@ func (c *Xray) AddNode(tag string, info *panel.NodeInfo, config *conf.Options) e
 	return nil
 }
 
+// UpdateDNS re-applies panel DNS-unlock routes on a hot config reload. See the
+// vCore.Core interface doc. updateDNSConfig is idempotent — saveDnsConfig skips
+// the write when the rendered DNS file is byte-identical — so calling this on
+// every node-info change is cheap and cannot loop the config watcher.
+func (c *Xray) UpdateDNS(tag string, info *panel.NodeInfo) error {
+	return updateDNSConfig(info)
+}
+
 func (c *Xray) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, config *conf.Options) {
 	reportMin := config.ReportMinTraffic
 	if info.NodeReportMinTraffic > 0 {

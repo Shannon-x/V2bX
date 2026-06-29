@@ -424,6 +424,13 @@ func (b *Sing) AddNode(tag string, info *panel.NodeInfo, config *conf.Options) e
 	return nil
 }
 
+// UpdateDNS is a no-op for the sing core here: panel DNS-unlock hot-reload is
+// implemented for the xray core. Implemented to satisfy the vCore.Core
+// interface.
+func (b *Sing) UpdateDNS(tag string, info *panel.NodeInfo) error {
+	return nil
+}
+
 func (b *Sing) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, config *conf.Options) {
 	reportMin := config.ReportMinTraffic
 	if info.NodeReportMinTraffic > 0 {

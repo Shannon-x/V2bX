@@ -2,6 +2,7 @@ package xray
 
 import (
 	"bytes"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -58,10 +59,18 @@ func updateDNSConfig(node *panel.NodeInfo) (err error) {
 }
 
 func saveDnsConfig(dns []byte, dnsPath string) (err error) {
+	if dnsPath == "" {
+		return errors.New("XRAY_DNS_PATH is empty")
+	}
 	currentData, err := os.ReadFile(dnsPath)
 	if err != nil {
-		log.WithField("err", err).Error("Failed to read XRAY_DNS_PATH")
-		return err
+		if !os.IsNotExist(err) {
+			log.WithField("err", err).Error("Failed to read XRAY_DNS_PATH")
+			return err
+		}
+		// First run: the DNS file does not exist yet. Treat the current content
+		// as empty so the atomic write below creates it instead of bailing out.
+		currentData = nil
 	}
 	if !bytes.Equal(currentData, dns) {
 		coreDnsConfig := &coreConf.DNSConfig{}

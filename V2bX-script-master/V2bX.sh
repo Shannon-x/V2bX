@@ -285,15 +285,32 @@ disable() {
 }
 
 show_log() {
-    echo -e "${yellow}提示: 连接(access)日志已写入 /var/log/V2bX/access.log (自动轮转), 此处仅显示服务运行日志${plain}"
-    if [[ x"${release}" == x"alpine" ]]; then
-        if [[ -f /var/log/V2bX.log ]]; then
-            tail -n 100 -f /var/log/V2bX.log
+    echo -e "请选择要查看的日志:"
+    echo -e "  ${green}1.${plain} 连接日志 (每条用户连接记录, /var/log/V2bX/access.log)"
+    echo -e "  ${green}2.${plain} 服务运行日志 (启动/报错等)"
+    read -rp "请输入选择 [默认1]: " log_type
+    if [[ x"$log_type" == x"2" ]]; then
+        if [[ x"${release}" == x"alpine" ]]; then
+            if [[ -f /var/log/V2bX.log ]]; then
+                tail -n 100 -f /var/log/V2bX.log
+            else
+                echo -e "${red}日志文件不存在，请先启动 V2bX${plain}"
+            fi
         else
-            echo -e "${red}日志文件不存在，请先启动 V2bX${plain}"
+            journalctl -u V2bX.service -e --no-pager -f
         fi
     else
-        journalctl -u V2bX.service -e --no-pager -f
+        if [[ -f /var/log/V2bX/access.log ]]; then
+            echo -e "${yellow}实时查看连接日志, Ctrl+C 退出${plain}"
+            echo -e "${yellow}历史日志按天轮转保存在 /var/log/V2bX/, 按日期检索: zgrep '2026/07/06' /var/log/V2bX/access*.log*${plain}"
+            tail -n 50 -f /var/log/V2bX/access.log
+        else
+            echo -e "${red}/var/log/V2bX/access.log 不存在${plain}"
+            echo -e "${yellow}请检查:${plain}"
+            echo -e "  1) V2bX 是否已更新到 v1.1.202607060806 及以上并重启 (v2bx update)"
+            echo -e "  2) 配置中 Xray 内核的 Log.AccessPath 是否被设为 none/console"
+            echo -e "  3) 服务运行日志中是否有 'Access log file not writable' 告警 (选项2查看)"
+        fi
     fi
     if [[ $# == 0 ]]; then
         before_show_menu

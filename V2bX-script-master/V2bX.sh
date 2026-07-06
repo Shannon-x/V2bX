@@ -285,11 +285,14 @@ disable() {
 }
 
 show_log() {
+    local access_log="/var/log/V2bX/access.log"
     echo -e "请选择要查看的日志:"
-    echo -e "  ${green}1.${plain} 连接日志 (每条用户连接记录, /var/log/V2bX/access.log)"
-    echo -e "  ${green}2.${plain} 服务运行日志 (启动/报错等)"
+    echo -e "  ${green}1.${plain} 连接日志 - 实时跟随最新记录 (Ctrl+C 退出)"
+    echo -e "  ${green}2.${plain} 连接日志 - 浏览历史, 从最新一条开始往回翻 (PageUp 上翻, q 退出)"
+    echo -e "  ${green}3.${plain} 服务运行日志 (启动/报错等)"
     read -rp "请输入选择 [默认1]: " log_type
-    if [[ x"$log_type" == x"2" ]]; then
+    case "$log_type" in
+    3)
         if [[ x"${release}" == x"alpine" ]]; then
             if [[ -f /var/log/V2bX.log ]]; then
                 tail -n 100 -f /var/log/V2bX.log
@@ -299,22 +302,40 @@ show_log() {
         else
             journalctl -u V2bX.service -e --no-pager -f
         fi
-    else
-        if [[ -f /var/log/V2bX/access.log ]]; then
-            echo -e "${yellow}实时查看连接日志, Ctrl+C 退出${plain}"
-            echo -e "${yellow}历史日志按天轮转保存在 /var/log/V2bX/, 按日期检索: zgrep '2026/07/06' /var/log/V2bX/access*.log*${plain}"
-            tail -n 50 -f /var/log/V2bX/access.log
+        ;;
+    2)
+        if [[ -f ${access_log} ]]; then
+            echo -e "${yellow}已定位到最新一条, PageUp/↑ 向前翻旧记录, q 退出${plain}"
+            echo -e "${yellow}按日期检索历史: zgrep '2026/07/06' /var/log/V2bX/access*.log*${plain}"
+            if command -v less >/dev/null 2>&1; then
+                less +G ${access_log}
+            else
+                tail -n 200 ${access_log}
+            fi
         else
-            echo -e "${red}/var/log/V2bX/access.log 不存在${plain}"
-            echo -e "${yellow}请检查:${plain}"
-            echo -e "  1) V2bX 是否已更新到 v1.1.202607060806 及以上并重启 (v2bx update)"
-            echo -e "  2) 配置中 Xray 内核的 Log.AccessPath 是否被设为 none/console"
-            echo -e "  3) 服务运行日志中是否有 'Access log file not writable' 告警 (选项2查看)"
+            show_access_log_missing_hint
         fi
-    fi
+        ;;
+    *)
+        if [[ -f ${access_log} ]]; then
+            echo -e "${yellow}最新日志在最下方实时滚动, Ctrl+C 退出${plain}"
+            tail -n 50 -f ${access_log}
+        else
+            show_access_log_missing_hint
+        fi
+        ;;
+    esac
     if [[ $# == 0 ]]; then
         before_show_menu
     fi
+}
+
+show_access_log_missing_hint() {
+    echo -e "${red}/var/log/V2bX/access.log 不存在${plain}"
+    echo -e "${yellow}请检查:${plain}"
+    echo -e "  1) V2bX 是否已更新到 v1.1.202607060806 及以上并重启 (v2bx update)"
+    echo -e "  2) 配置中 Xray 内核的 Log.AccessPath 是否被设为 none/console"
+    echo -e "  3) 服务运行日志中是否有 'Access log file not writable' 告警"
 }
 
 install_bbr() {

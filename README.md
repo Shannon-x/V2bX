@@ -96,8 +96,12 @@ docker run -d \
   --restart=always \
   --network=host \
   -v /etc/V2bX:/etc/V2bX \
+  -v /var/log/V2bX:/var/log/V2bX \
   ghcr.io/shannon-x/v2bx:latest
 ```
+
+> `-v /var/log/V2bX:/var/log/V2bX` 用于持久化连接（access）日志；不挂载的话日志会留在容器可写层，
+> 容器重建时丢失。如果希望连接日志继续输出到 `docker logs`，把 Xray 内核的 `Log.AccessPath` 设为 `"console"`。
 
 ### Docker Compose 部署
 
@@ -112,6 +116,7 @@ services:
     network_mode: host
     volumes:
       - /etc/V2bX:/etc/V2bX
+      - /var/log/V2bX:/var/log/V2bX
 ```
 
 ```bash
@@ -147,7 +152,12 @@ docker compose up -d
     "Type": "xray",
     "Log": {
         "Level": "error",
-        "ErrorPath": "/etc/V2bX/error.log"
+        "AccessPath": "",
+        "ErrorPath": "/etc/V2bX/error.log",
+        "MaxSize": 100,
+        "MaxBackups": 0,
+        "MaxDays": 90,
+        "Compress": true
     },
     "AssetPath": "/etc/V2bX/",
     "DnsConfigPath": "/etc/V2bX/dns.json",
@@ -165,11 +175,21 @@ docker compose up -d
 
 | 字段 | 说明 |
 |------|------|
+| `Log.AccessPath` | 连接（access）日志路径。留空 = 默认写入 `/var/log/V2bX/access.log`（自动轮转）；`"console"` = 输出到 stdout/journald（旧行为）；`"none"` = 完全关闭 |
+| `Log.ErrorPath` | 错误日志路径，写文件时同样自动轮转 |
+| `Log.MaxSize` | 单个日志文件大小上限（MB），超过即轮转，默认 100 |
+| `Log.MaxBackups` | 保留的轮转文件个数，0 = 不限个数（仅按天数清理），默认 0 |
+| `Log.MaxDays` | 轮转日志保留天数，默认 90，0 = 永久保留 |
+| `Log.Compress` | 轮转后是否 gzip 压缩旧日志，默认 true |
 | `AssetPath` | geoip.dat / geosite.dat 文件路径 |
 | `DnsConfigPath` | Xray DNS 配置文件路径 |
 | `OutboundConfigPath` | 自定义出站配置 |
 | `RouteConfigPath` | 自定义路由规则 |
 | `XrayConnectionConfig` | TCP 连接性能参数（握手超时、空闲超时、缓冲区等） |
+
+> 连接日志默认不再刷进 systemd journal（此前空 `AccessPath` 会把每条连接写到 stdout，导致 journald 无限增长）。
+> 更新后无需改配置：连接日志自动落到 `/var/log/V2bX/access.log`，每天零点切分、超过 100MB 也会切分，
+> 旧文件 gzip 压缩、保留 90 天，可用 `zgrep '2026/07/06' /var/log/V2bX/access*.log*` 这类命令按日期检索。
 
 默认使用均衡通用参数（`handshake: 10`、`connIdle: 300`、`bufferSize: 256`），适合大多数 1GB 左右内存 VPS。  
 如果你是大带宽高内存机器可考虑提高到 `15/600/5/10/512`，低内存机器可降到 `4/60/1/2/32`。

@@ -11,9 +11,17 @@ type XrayConfig struct {
 }
 
 type XrayLogConfig struct {
-	Level      string `json:"Level"`
+	Level string `json:"Level"`
+	// AccessPath: "" writes connection logs to the default rotated file
+	// (/var/log/V2bX/access.log), "console" restores the legacy
+	// stdout/journald behavior, "none" disables them entirely.
 	AccessPath string `json:"AccessPath"`
 	ErrorPath  string `json:"ErrorPath"`
+	// Rotation applies to every file-based xray log (access and error).
+	MaxSize    int  `json:"MaxSize"`    // MB per file before rotation
+	MaxBackups int  `json:"MaxBackups"` // rotated files to keep, 0 = unlimited
+	MaxDays    int  `json:"MaxDays"`    // days to retain rotated files
+	Compress   bool `json:"Compress"`   // gzip rotated files
 }
 
 type XrayConnectionConfig struct {
@@ -30,6 +38,10 @@ func NewXrayConfig() *XrayConfig {
 			Level:      "warning",
 			AccessPath: "",
 			ErrorPath:  "",
+			MaxSize:    100,
+			MaxBackups: 0,
+			MaxDays:    90,
+			Compress:   true,
 		},
 		AssetPath:          "/etc/V2bX/",
 		DnsConfigPath:      "",

@@ -78,9 +78,16 @@ func parseConnectionConfig(c *conf.XrayConnectionConfig) (policy *coreConf.Polic
 func getCore(c *conf.XrayConfig) *core.Instance {
 	os.Setenv("XRAY_LOCATION_ASSET", c.AssetPath)
 	// Log Config
+	applyLogRotateOptions(c.LogConfig)
+	if p := c.LogConfig.ErrorPath; p != "" && p != "none" {
+		if err := ensureLogWritable(p); err != nil {
+			log.WithFields(log.Fields{"path": p, "err": err}).
+				Warn("Error log file not writable, error logs may be dropped")
+		}
+	}
 	coreLogConfig := &coreConf.LogConfig{
 		LogLevel:  c.LogConfig.Level,
-		AccessLog: c.LogConfig.AccessPath,
+		AccessLog: resolveAccessLogPath(c.LogConfig.AccessPath),
 		ErrorLog:  c.LogConfig.ErrorPath,
 	}
 	// DNS config

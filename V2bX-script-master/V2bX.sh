@@ -285,6 +285,7 @@ disable() {
 }
 
 show_log() {
+    echo -e "${yellow}提示: 连接(access)日志已写入 /var/log/V2bX/access.log (自动轮转), 此处仅显示服务运行日志${plain}"
     if [[ x"${release}" == x"alpine" ]]; then
         if [[ -f /var/log/V2bX.log ]]; then
             tail -n 100 -f /var/log/V2bX.log

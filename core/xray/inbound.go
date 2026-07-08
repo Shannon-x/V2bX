@@ -134,11 +134,12 @@ func buildInbound(option *conf.Options, nodeInfo *panel.NodeInfo, tag string) (*
 	}
 
 	// Real client IP behind a trusted CDN (e.g. Cloudflare): xray's
-	// ws/httpupgrade/xhttp listeners replace the connection source with the
-	// first X-Forwarded-For entry, but only for requests carrying one of
+	// ws/httpupgrade/xhttp/grpc listeners replace the connection source with
+	// the first X-Forwarded-For entry, but only for requests carrying one of
 	// these header names (sockopt.trustedXForwardedFor). Without this,
 	// device limiting and panel online-IP reporting see the CDN edge IP.
-	if trustedXFF := resolveTrustedXFF(option, networkSettings); len(trustedXFF) > 0 {
+	// Defaults on for HTTP-based transports so it works without any config.
+	if trustedXFF := resolveTrustedXFF(option, networkSettings, network); len(trustedXFF) > 0 {
 		if in.StreamSetting.SocketSettings == nil {
 			in.StreamSetting.SocketSettings = &coreConf.SocketConfig{}
 		}
@@ -211,13 +212,37 @@ func buildInbound(option *conf.Options, nodeInfo *panel.NodeInfo, tag string) (*
 	return in.Build()
 }
 
-// resolveTrustedXFF merges the local per-node TrustedXForwardedFor option
-// with the panel's network_settings sockopt block; the local option wins
-// when both are set.
-func resolveTrustedXFF(option *conf.Options, networkSettings json.RawMessage) []string {
-	if len(option.XrayOptions.TrustedXForwardedFor) > 0 {
+// isHTTPTransport reports whether the network carries an HTTP handshake whose
+// headers a CDN can populate — the only transports where reading
+// X-Forwarded-For is meaningful.
+func isHTTPTransport(network string) bool {
+	switch network {
+	case "ws", "websocket", "httpupgrade", "splithttp", "xhttp", "grpc", "gun":
+		return true
+	default:
+		return false
+	}
+}
+
+// resolveTrustedXFF decides the trusted-header list for an inbound. Priority:
+// explicit local option, then the panel's network_settings sockopt, then —
+// for HTTP-based transports unless DisableCDNRealIP is set — an automatic
+// ["CF-Connecting-IP"] default so real client IPs work behind Cloudflare with
+// zero configuration.
+func resolveTrustedXFF(option *conf.Options, networkSettings json.RawMessage, network string) []string {
+	if option.XrayOptions != nil && len(option.XrayOptions.TrustedXForwardedFor) > 0 {
 		return option.XrayOptions.TrustedXForwardedFor
 	}
+	if xff := panelSockoptXFF(networkSettings); len(xff) > 0 {
+		return xff
+	}
+	if option.XrayOptions != nil && !option.XrayOptions.DisableCDNRealIP && isHTTPTransport(network) {
+		return []string{"CF-Connecting-IP"}
+	}
+	return nil
+}
+
+func panelSockoptXFF(networkSettings json.RawMessage) []string {
 	if len(networkSettings) == 0 {
 		return nil
 	}

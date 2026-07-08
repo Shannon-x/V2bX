@@ -72,16 +72,20 @@ type XrayOptions struct {
 	// as coming through a trusted reverse proxy / CDN. For such requests the
 	// ws/httpupgrade/xhttp/grpc listener replaces the connection source with
 	// the FIRST X-Forwarded-For entry, so device limiting and panel online-IP
-	// reporting see the real client instead of the CDN edge. For Cloudflare
-	// use ["CF-Connecting-IP"].
+	// reporting see the real client instead of the CDN edge.
 	//
-	// SECURITY: the first X-Forwarded-For entry is client-forgeable — behind
-	// Cloudflare it is only safe if you BOTH (a) firewall the origin to
-	// Cloudflare's IP ranges AND (b) add a Cloudflare Transform Rule setting
-	// X-Forwarded-For to cf.connecting_ip (CF appends the real IP rather than
-	// overwriting, so without the rule a client can prepend a forged entry).
-	// Leave empty to disable (default); see README for the full setup.
+	// Leave empty (default): V2bX auto-uses ["CF-Connecting-IP"] for HTTP-based
+	// transports (ws/httpupgrade/xhttp/grpc), so real client IPs work out of
+	// the box behind Cloudflare with no config. Set it to override the header
+	// list for a different CDN, or set DisableCDNRealIP to turn the default off.
 	TrustedXForwardedFor []string `json:"TrustedXForwardedFor"`
+	// DisableCDNRealIP turns off the automatic ["CF-Connecting-IP"] default
+	// above. Normal proxy clients never send X-Forwarded-For, so the auto
+	// default reports the true client IP; a deliberately-malicious subscriber
+	// could still forge it (CF appends rather than overwrites XFF). To harden,
+	// firewall the origin to Cloudflare IP ranges and add a CF Transform Rule
+	// setting X-Forwarded-For to cf.connecting_ip. See README.
+	DisableCDNRealIP bool `json:"DisableCDNRealIP"`
 }
 
 type FallBackConfigForXray struct {

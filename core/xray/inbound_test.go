@@ -12,29 +12,40 @@ import (
 
 func TestResolveTrustedXFF(t *testing.T) {
 	localOpt := &conf.Options{XrayOptions: &conf.XrayOptions{
-		TrustedXForwardedFor: []string{"CF-Connecting-IP"},
+		TrustedXForwardedFor: []string{"True-Client-IP"},
 	}}
 	noneOpt := &conf.Options{XrayOptions: &conf.XrayOptions{}}
-	panelSockopt := json.RawMessage(`{"path":"/ws","sockopt":{"trustedXForwardedFor":["True-Client-IP"]}}`)
+	disabledOpt := &conf.Options{XrayOptions: &conf.XrayOptions{DisableCDNRealIP: true}}
+	panelSockopt := json.RawMessage(`{"path":"/ws","sockopt":{"trustedXForwardedFor":["X-Real-IP"]}}`)
 
-	if got := resolveTrustedXFF(localOpt, nil); !reflect.DeepEqual(got, []string{"CF-Connecting-IP"}) {
+	// Explicit local option wins everywhere.
+	if got := resolveTrustedXFF(localOpt, nil, "ws"); !reflect.DeepEqual(got, []string{"True-Client-IP"}) {
 		t.Fatalf("local option: got %v", got)
 	}
-	// Local config wins over panel sockopt.
-	if got := resolveTrustedXFF(localOpt, panelSockopt); !reflect.DeepEqual(got, []string{"CF-Connecting-IP"}) {
+	if got := resolveTrustedXFF(localOpt, panelSockopt, "ws"); !reflect.DeepEqual(got, []string{"True-Client-IP"}) {
 		t.Fatalf("local should win over panel: got %v", got)
 	}
-	if got := resolveTrustedXFF(noneOpt, panelSockopt); !reflect.DeepEqual(got, []string{"True-Client-IP"}) {
+	// Panel sockopt beats the auto default.
+	if got := resolveTrustedXFF(noneOpt, panelSockopt, "ws"); !reflect.DeepEqual(got, []string{"X-Real-IP"}) {
 		t.Fatalf("panel sockopt: got %v", got)
 	}
-	if got := resolveTrustedXFF(noneOpt, nil); got != nil {
-		t.Fatalf("no source: got %v, want nil", got)
+	// Auto default for HTTP transports with nothing configured.
+	for _, nw := range []string{"ws", "httpupgrade", "xhttp", "splithttp", "grpc"} {
+		if got := resolveTrustedXFF(noneOpt, nil, nw); !reflect.DeepEqual(got, []string{"CF-Connecting-IP"}) {
+			t.Fatalf("auto default for %s: got %v", nw, got)
+		}
 	}
-	if got := resolveTrustedXFF(noneOpt, json.RawMessage(`{not json`)); got != nil {
-		t.Fatalf("malformed settings: got %v, want nil", got)
+	// Non-HTTP transports never get the auto default.
+	if got := resolveTrustedXFF(noneOpt, nil, "tcp"); got != nil {
+		t.Fatalf("tcp auto default: got %v, want nil", got)
 	}
-	if got := resolveTrustedXFF(noneOpt, json.RawMessage(`{"path":"/ws"}`)); got != nil {
-		t.Fatalf("settings without sockopt: got %v, want nil", got)
+	// Opt-out disables the auto default.
+	if got := resolveTrustedXFF(disabledOpt, nil, "ws"); got != nil {
+		t.Fatalf("DisableCDNRealIP: got %v, want nil", got)
+	}
+	// Malformed panel settings fall through to the auto default (not a crash).
+	if got := resolveTrustedXFF(noneOpt, json.RawMessage(`{not json`), "ws"); !reflect.DeepEqual(got, []string{"CF-Connecting-IP"}) {
+		t.Fatalf("malformed settings: got %v", got)
 	}
 }
 
@@ -101,16 +112,32 @@ func TestBuildInboundWiresTrustedXFFFromPanelSockopt(t *testing.T) {
 	}
 }
 
-// Default behavior is unchanged: no trusted headers configured anywhere means
-// the field stays empty and sources are never rewritten from XFF.
-func TestBuildInboundNoTrustedXFFByDefault(t *testing.T) {
+// Out of the box (no config at all), a ws inbound gets the CF-Connecting-IP
+// default so real client IPs work behind Cloudflare on a plain binary update.
+func TestBuildInboundAutoTrustedXFFForWS(t *testing.T) {
 	option := &conf.Options{
 		ListenIP:    "0.0.0.0",
 		XrayOptions: &conf.XrayOptions{},
 	}
 	rc := buildTestWSInbound(t, option, `{"path":"/ws"}`)
+	ss := rc.StreamSettings
+	if ss == nil || ss.SocketSettings == nil {
+		t.Fatal("SocketSettings missing from built ws inbound")
+	}
+	if !reflect.DeepEqual(ss.SocketSettings.TrustedXForwardedFor, []string{"CF-Connecting-IP"}) {
+		t.Fatalf("auto default: got %v, want [CF-Connecting-IP]", ss.SocketSettings.TrustedXForwardedFor)
+	}
+}
+
+// DisableCDNRealIP turns the auto default off for operators who do not want it.
+func TestBuildInboundDisableCDNRealIP(t *testing.T) {
+	option := &conf.Options{
+		ListenIP:    "0.0.0.0",
+		XrayOptions: &conf.XrayOptions{DisableCDNRealIP: true},
+	}
+	rc := buildTestWSInbound(t, option, `{"path":"/ws"}`)
 	if ss := rc.StreamSettings; ss != nil && ss.SocketSettings != nil &&
 		len(ss.SocketSettings.TrustedXForwardedFor) > 0 {
-		t.Fatalf("TrustedXForwardedFor unexpectedly set: %v", ss.SocketSettings.TrustedXForwardedFor)
+		t.Fatalf("TrustedXForwardedFor set despite DisableCDNRealIP: %v", ss.SocketSettings.TrustedXForwardedFor)
 	}
 }

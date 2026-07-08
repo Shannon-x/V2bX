@@ -74,28 +74,28 @@ func buildInbound(option *conf.Options, nodeInfo *panel.NodeInfo, tag string) (*
 		in.StreamSetting = &coreConf.StreamConfig{Network: &t}
 	}
 
+	// Some transport options arrive in the panel's network_settings instead
+	// of the local config file (v2node compat).
+	var networkSettings json.RawMessage
+	switch nodeInfo.Type {
+	case "vmess", "vless":
+		if nodeInfo.VAllss != nil {
+			networkSettings = nodeInfo.VAllss.NetworkSettings
+		}
+	case "trojan":
+		if nodeInfo.Trojan != nil {
+			networkSettings = nodeInfo.Trojan.NetworkSettings
+		}
+	}
+
 	// Determine ProxyProtocol: from panel NetworkSettings (v2node compat) OR local config
 	enableProxyProtocol := option.XrayOptions.EnableProxyProtocol
-	if !enableProxyProtocol {
-		// Check panel's NetworkSettings for acceptProxyProtocol (as v2node does)
-		var networkSettings json.RawMessage
-		switch nodeInfo.Type {
-		case "vmess", "vless":
-			if nodeInfo.VAllss != nil {
-				networkSettings = nodeInfo.VAllss.NetworkSettings
-			}
-		case "trojan":
-			if nodeInfo.Trojan != nil {
-				networkSettings = nodeInfo.Trojan.NetworkSettings
-			}
+	if !enableProxyProtocol && len(networkSettings) > 0 {
+		var ppConfig struct {
+			AcceptProxyProtocol bool `json:"acceptProxyProtocol"`
 		}
-		if len(networkSettings) > 0 {
-			var ppConfig struct {
-				AcceptProxyProtocol bool `json:"acceptProxyProtocol"`
-			}
-			if json.Unmarshal(networkSettings, &ppConfig) == nil && ppConfig.AcceptProxyProtocol {
-				enableProxyProtocol = true
-			}
+		if json.Unmarshal(networkSettings, &ppConfig) == nil && ppConfig.AcceptProxyProtocol {
+			enableProxyProtocol = true
 		}
 	}
 
@@ -131,6 +131,18 @@ func buildInbound(option *conf.Options, nodeInfo *panel.NodeInfo, tag string) (*
 			in.StreamSetting.SocketSettings = &coreConf.SocketConfig{}
 		}
 		in.StreamSetting.SocketSettings.AcceptProxyProtocol = true
+	}
+
+	// Real client IP behind a trusted CDN (e.g. Cloudflare): xray's
+	// ws/httpupgrade/xhttp listeners replace the connection source with the
+	// first X-Forwarded-For entry, but only for requests carrying one of
+	// these header names (sockopt.trustedXForwardedFor). Without this,
+	// device limiting and panel online-IP reporting see the CDN edge IP.
+	if trustedXFF := resolveTrustedXFF(option, networkSettings); len(trustedXFF) > 0 {
+		if in.StreamSetting.SocketSettings == nil {
+			in.StreamSetting.SocketSettings = &coreConf.SocketConfig{}
+		}
+		in.StreamSetting.SocketSettings.TrustedXForwardedFor = trustedXFF
 	}
 
 	// Set TLS or Reality settings
@@ -197,6 +209,27 @@ func buildInbound(option *conf.Options, nodeInfo *panel.NodeInfo, tag string) (*
 	}
 	in.Tag = tag
 	return in.Build()
+}
+
+// resolveTrustedXFF merges the local per-node TrustedXForwardedFor option
+// with the panel's network_settings sockopt block; the local option wins
+// when both are set.
+func resolveTrustedXFF(option *conf.Options, networkSettings json.RawMessage) []string {
+	if len(option.XrayOptions.TrustedXForwardedFor) > 0 {
+		return option.XrayOptions.TrustedXForwardedFor
+	}
+	if len(networkSettings) == 0 {
+		return nil
+	}
+	var s struct {
+		Sockopt struct {
+			TrustedXForwardedFor []string `json:"trustedXForwardedFor"`
+		} `json:"sockopt"`
+	}
+	if err := json.Unmarshal(networkSettings, &s); err != nil {
+		return nil
+	}
+	return s.Sockopt.TrustedXForwardedFor
 }
 
 func buildV2ray(config *conf.Options, nodeInfo *panel.NodeInfo, inbound *coreConf.InboundDetourConfig) error {

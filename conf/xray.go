@@ -68,6 +68,20 @@ type XrayOptions struct {
 	DisableSniffing     bool                    `json:"DisableSniffing"`
 	EnableFallback      bool                    `json:"EnableFallback"`
 	FallBackConfigs     []FallBackConfigForXray `json:"FallBackConfigs"`
+	// TrustedXForwardedFor lists header names whose presence marks a request
+	// as coming through a trusted reverse proxy / CDN. For such requests the
+	// ws/httpupgrade/xhttp/grpc listener replaces the connection source with
+	// the FIRST X-Forwarded-For entry, so device limiting and panel online-IP
+	// reporting see the real client instead of the CDN edge. For Cloudflare
+	// use ["CF-Connecting-IP"].
+	//
+	// SECURITY: the first X-Forwarded-For entry is client-forgeable — behind
+	// Cloudflare it is only safe if you BOTH (a) firewall the origin to
+	// Cloudflare's IP ranges AND (b) add a Cloudflare Transform Rule setting
+	// X-Forwarded-For to cf.connecting_ip (CF appends the real IP rather than
+	// overwriting, so without the rule a client can prepend a forged entry).
+	// Leave empty to disable (default); see README for the full setup.
+	TrustedXForwardedFor []string `json:"TrustedXForwardedFor"`
 }
 
 type FallBackConfigForXray struct {

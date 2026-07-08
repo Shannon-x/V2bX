@@ -289,8 +289,9 @@ func (c *Client) GetNodeInfoCtx(ctx context.Context) (node *NodeInfo, err error)
 			node.Security = None
 		case "trojan":
 			node.Trojan = &TrojanNode{
-				CommonNode: rsp.CommonNode,
-				Network:    rsp.Network,
+				CommonNode:      rsp.CommonNode,
+				Network:         rsp.Network,
+				NetworkSettings: rsp.NetworkSettings,
 			}
 			node.Security = Tls
 		case "tuic":

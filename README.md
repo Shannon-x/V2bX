@@ -283,6 +283,32 @@ docker compose up -d
 | `EnableProxyProtocol` | 启用 Proxy Protocol（反代场景） |
 | `DisableSniffing` | 禁用协议嗅探 |
 | `EnableFallback` | 启用回落（Vless/Trojan） |
+| `TrustedXForwardedFor` | CDN 回源真实 IP（见下文） |
+
+**Cloudflare CDN 回源真实 IP（TrustedXForwardedFor）**
+
+vless/vmess/trojan 走 CF CDN（ws / httpupgrade / xhttp / grpc）时，源站看到的连接来源是 CF 边缘节点
+IP，设备数限制和面板在线 IP 上报的都是 CF IP。开启后可用请求头里的真实 IP 替换连接来源。在节点配置
+中加入（也可改为在面板节点的自定义 `network_settings` 里写 `"sockopt": { "trustedXForwardedFor": [...] }`）：
+
+```json
+"TrustedXForwardedFor": ["CF-Connecting-IP"]
+```
+
+> ⚠️ **必读安全配置——只加上面这行并不安全。** 当配置的请求头存在时，程序取的是 `X-Forwarded-For`
+> 的**最左一项**作为真实 IP。而 Cloudflare 默认是把访客真实 IP **追加**到 `X-Forwarded-For` 末尾，
+> **不会覆盖**客户端自带的值——也就是说最左项是客户端可伪造的。若不做下面两步，恶意用户能把设备全部
+> 伪造成同一 IP 绕过设备数限制，或往面板/日志注入任意 IP。要安全使用，两步都必须做：
+>
+> 1. **防火墙只放行 [Cloudflare 官方 IP 段](https://www.cloudflare.com/ips/) 访问源站端口**，
+>    挡掉直连伪造。
+> 2. **在 Cloudflare 加一条 Transform Rule（Rules → Transform Rules → Modify Request Header），
+>    把 `X-Forwarded-For` 设为动态值 `cf.connecting_ip`**（免费版即支持）。这样 CF 会用真实访客 IP
+>    覆盖客户端自带的 `X-Forwarded-For`，最左项才真正不可伪造。
+>
+> 两步齐全后，设备限制、在线 IP 上报、连接日志都会使用真实客户端 IP。默认关闭，不配置时行为与旧版本
+> 完全一致。四种传输（ws / httpupgrade / xhttp / grpc）均生效，grpc 通过 gRPC metadata 读取，同样需要
+> 上面两步防护。若无法配置 Transform Rule，请视此功能为“尽力而为”，不要依赖它做严格的设备数限制。
 
 #### sing-box 节点示例
 

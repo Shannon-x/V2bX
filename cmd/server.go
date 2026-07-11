@@ -81,15 +81,7 @@ func serverHandle(_ *cobra.Command, _ []string) {
 		log.WithField("err", err).Error("Start core failed")
 		return
 	}
-	// H-13: guard the shutdown Close against a nil core. A failed reload can
-	// leave vc nil (rollback also failed); the deferred close must not panic.
-	// Also closes the CURRENT vc (a plain `defer vc.Close()` would capture the
-	// startup core and, after reloads reassigned vc, close the wrong one).
-	defer func() {
-		if vc != nil {
-			_ = vc.Close()
-		}
-	}()
+	defer vc.Close()
 	log.Info("Core ", vc.Type(), " started")
 	nodes := node.New()
 	err = nodes.Start(c.NodeConfig, vc)
@@ -101,84 +93,31 @@ func serverHandle(_ *cobra.Command, _ []string) {
 	xdns := os.Getenv("XRAY_DNS_PATH")
 	sdns := os.Getenv("SING_DNS_PATH")
 	if watch {
-		// Snapshot the config the running stack was built from so a failed
-		// reload can roll back to it. The watcher replaces c.CoresConfig /
-		// c.NodeConfig with new slice references before calling the callback,
-		// so these references keep pointing at the last-good config.
-		runningCores := c.CoresConfig
-		runningNodes := c.NodeConfig
-
-		// bringUp builds a fresh core from cores, starts it, and starts the
-		// shared nodes manager on it. On any failure it tears down whatever it
-		// started and returns (nil, err).
-		bringUp := func(cores []conf.CoreConfig, nodeCfg []conf.NodeConfig) (vCore.Core, error) {
-			nc, berr := vCore.NewCore(cores)
-			if berr != nil {
-				return nil, berr
-			}
-			if berr = nc.Start(); berr != nil {
-				return nil, berr
-			}
-			if berr = nodes.Start(nodeCfg, nc); berr != nil {
-				_ = nc.Close()
-				return nil, berr
-			}
-			return nc, nil
-		}
-
-		rollback := func() {
-			rvc, rerr := bringUp(runningCores, runningNodes)
-			if rerr != nil {
-				log.WithField("err", rerr).Error("Reload rollback FAILED — proxy service is DOWN, manual restart required")
-				vc = nil
-				return
-			}
-			vc = rvc
-			log.Warn("Reload failed but rolled back to the last-good config; service restored")
-		}
-
 		err = c.Watch(config, xdns, sdns, func() {
-			// H-13: transactional reload. The watcher already parsed the new
-			// config file (a JSON error aborts before this runs, leaving the
-			// service untouched). Build the new core BEFORE tearing anything
-			// down: NewCore parses the whole config (routes/outbounds/policy/
-			// DNS) but binds no ports, so a bad config (typo, bad cert path,
-			// bad cipher, invalid route) is caught here while the current
-			// service keeps serving.
-			newCores := c.CoresConfig
-			newNodes := c.NodeConfig
-			newVc, berr := vCore.NewCore(newCores)
-			if berr != nil {
-				log.WithField("err", berr).Error("Reload aborted: new config failed to build; current service kept running")
-				return
-			}
-			// Port reuse forces close-old-before-start-new.
 			nodes.Close()
-			if vc != nil {
-				if cerr := vc.Close(); cerr != nil {
-					log.WithField("err", cerr).Warn("Reload: closing old core reported error")
-				}
-				vc = nil
-			}
-			if serr := newVc.Start(); serr != nil {
-				log.WithField("err", serr).Error("Reload: start new core failed, rolling back to last-good")
-				_ = newVc.Close()
-				rollback()
+			err = vc.Close()
+			if err != nil {
+				log.WithField("err", err).Error("Restart node failed")
 				return
 			}
-			if serr := nodes.Start(newNodes, newVc); serr != nil {
-				log.WithField("err", serr).Error("Reload: start new nodes failed, rolling back to last-good")
-				_ = newVc.Close()
-				rollback()
+			vc, err = vCore.NewCore(c.CoresConfig)
+			if err != nil {
+				log.WithField("err", err).Error("New core failed")
 				return
 			}
-			// Success — publish the new stack and advance the last-good snapshot.
-			vc = newVc
-			runningCores = newCores
-			runningNodes = newNodes
-			log.Info("Core ", vc.Type(), " reloaded, nodes restarted")
-			// P-04: removed the per-reload runtime.GC(); a stop-the-world GC on
-			// every config edit has no measured justification.
+			err = vc.Start()
+			if err != nil {
+				log.WithField("err", err).Error("Start core failed")
+				return
+			}
+			log.Info("Core ", vc.Type(), " restarted")
+			err = nodes.Start(c.NodeConfig, vc)
+			if err != nil {
+				log.WithField("err", err).Error("Run nodes failed")
+				return
+			}
+			log.Info("Nodes restarted")
+			runtime.GC()
 		})
 		if err != nil {
 			log.WithField("err", err).Error("start watch failed")

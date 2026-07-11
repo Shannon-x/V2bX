@@ -1181,7 +1181,105 @@ show_usage() {
     echo "V2bX version      - 查看 V2bX 版本"
     echo "V2bX addnode      - 添加节点"
     echo "V2bX delnode      - 删除节点"
+    echo "V2bX routerule    - 更新路由禁止规则"
     echo "------------------------------------------"
+}
+
+ensure_jq() {
+    if command -v jq >/dev/null 2>&1; then
+        return 0
+    fi
+    echo -e "${yellow}正在安装 jq (用于安全修改 JSON)...${plain}"
+    if [[ x"${release}" == x"alpine" ]]; then
+        apk add --no-cache jq >/dev/null 2>&1
+    elif command -v apt >/dev/null 2>&1; then
+        apt-get update >/dev/null 2>&1
+        apt-get install -y jq >/dev/null 2>&1
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y jq >/dev/null 2>&1
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y jq >/dev/null 2>&1
+    fi
+    command -v jq >/dev/null 2>&1
+}
+
+# 只替换 route.json 里的“禁止规则”这一块 (outboundTag==block)，
+# 其它分流规则 (warp / 流媒体分流 / 自定义出站 / final / domainStrategy) 全部保留不动。
+update_route_block_rules() {
+    if ! ensure_jq; then
+        echo -e "${red}jq 安装失败，为避免破坏配置已取消。请手动安装 jq 后重试${plain}"
+        before_show_menu
+        return
+    fi
+
+    # 从 config.json 读取实际的 RouteConfigPath，没有则用默认路径
+    local route_file
+    route_file=$(jq -r '(.Cores[]? | select(.Type=="xray") | .RouteConfigPath) // empty' /etc/V2bX/config.json 2>/dev/null | head -n1)
+    [[ -z "${route_file}" ]] && route_file="/etc/V2bX/route.json"
+
+    if [[ ! -f "${route_file}" ]]; then
+        echo -e "${red}未找到路由文件 ${route_file}${plain}"
+        before_show_menu
+        return
+    fi
+    if ! jq empty "${route_file}" >/dev/null 2>&1; then
+        echo -e "${red}${route_file} 不是合法 JSON，已取消（请先修复该文件）${plain}"
+        before_show_menu
+        return
+    fi
+
+    # 新的禁止规则块（严格禁 BT/PT + 25端口 + 内网 + 广告 + 杀软 + 竞品机场 + 反诈/滥用域名）
+    local new_blocks
+    new_blocks=$(cat <<'JSON'
+[
+  { "ruleTag": "block-bt-proto", "type": "field", "outboundTag": "block", "protocol": ["bittorrent"] },
+  { "ruleTag": "block-bt-pt-tracker", "type": "field", "outboundTag": "block",
+    "domain": ["geosite:category-public-tracker", "geosite:category-pt", "geosite:category-ipfs"] },
+  { "ruleTag": "block-smtp", "type": "field", "outboundTag": "block", "port": 25 },
+  { "ruleTag": "block-private", "type": "field", "outboundTag": "block", "ip": ["geoip:private"] },
+  { "ruleTag": "block-ads", "type": "field", "outboundTag": "block", "domain": ["geosite:category-ads-all"] },
+  { "ruleTag": "block-antivirus", "type": "field", "outboundTag": "block", "domain": ["geosite:category-antivirus"] },
+  { "ruleTag": "block-competitor", "type": "field", "outboundTag": "block", "domain": ["geosite:category-vpnservices"] },
+  { "ruleTag": "block-abuse", "type": "field", "outboundTag": "block",
+    "domain": ["domain:xunlei.com", "domain:sandai.net",
+      "regexp:(.*\\.||)(laomoe|jiyou|ssss|lolicp|vv1234|0z|4321q|868123|ksweb|mm126)\\.(com|cloud|fun|cn|gs|xyz|cc)",
+      "regexp:(flows|miaoko)\\.(pages)\\.(dev)"] }
+]
+JSON
+)
+
+    local ts backup
+    ts=$(date +%Y%m%d%H%M%S)
+    backup="${route_file}.bak.${ts}"
+    cp "${route_file}" "${backup}"
+
+    # 合并：新禁止规则置顶 + 删除旧的 outboundTag==block 规则 + 保留其它一切
+    if jq --argjson nb "${new_blocks}" \
+        '.rules = ($nb + ((.rules // []) | map(select(.outboundTag != "block"))))' \
+        "${backup}" > "${route_file}.tmp" 2>/dev/null && jq empty "${route_file}.tmp" >/dev/null 2>&1; then
+        mv "${route_file}.tmp" "${route_file}"
+    else
+        rm -f "${route_file}.tmp"
+        echo -e "${red}生成新规则失败，已保留原文件不变${plain}"
+        before_show_menu
+        return
+    fi
+
+    echo -e "${green}已替换禁止规则，其它分流规则保持不变。${plain}"
+    echo -e "${yellow}备份文件: ${backup}${plain}"
+    echo -e "${yellow}正在重启 V2bX 使其生效...${plain}"
+    restart 0
+    sleep 1
+    check_status
+    if [[ $? != 0 ]]; then
+        echo -e "${red}V2bX 未能正常启动（可能 geosite.dat 缺少某分类），正在自动回滚...${plain}"
+        cp "${backup}" "${route_file}"
+        restart 0
+        echo -e "${yellow}已回滚到修改前的 route.json，请更新 geosite.dat 后重试${plain}"
+    else
+        echo -e "${green}V2bX 运行正常，新禁止规则已生效${plain}"
+    fi
+    before_show_menu
 }
 
 show_menu() {
@@ -1213,10 +1311,12 @@ show_menu() {
   ${green}17.${plain} 添加节点
   ${green}18.${plain} 删除节点
 ————————————————
-  ${green}19.${plain} 退出脚本
+  ${green}19.${plain} 更新路由禁止规则 (BT/PT/广告/竞品/杀软)
+————————————————
+  ${green}20.${plain} 退出脚本
  "
     show_status
-    echo && read -rp "请输入选择 [0-19]: " num
+    echo && read -rp "请输入选择 [0-20]: " num
 
     case "${num}" in
         0) config ;;
@@ -1238,8 +1338,9 @@ show_menu() {
         16) open_ports ;;
         17) check_install && add_single_node ;;
         18) check_install && delete_node ;;
-        19) exit ;;
-        *) echo -e "${red}请输入正确的数字 [0-19]${plain}" ;;
+        19) check_install && update_route_block_rules ;;
+        20) exit ;;
+        *) echo -e "${red}请输入正确的数字 [0-20]${plain}" ;;
     esac
 }
 
@@ -1263,6 +1364,7 @@ if [[ $# > 0 ]]; then
         "update_shell") update_shell ;;
         "addnode") check_install 0 && add_single_node ;;
         "delnode") check_install 0 && delete_node ;;
+        "routerule") check_install 0 && update_route_block_rules ;;
         *) show_usage
     esac
 else

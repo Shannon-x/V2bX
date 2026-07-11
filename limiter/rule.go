@@ -85,23 +85,26 @@ func (l *Limiter) CheckRouteRule(destDomain string, destIP string) string {
 }
 
 func (l *Limiter) UpdateRule(rule *panel.Rules) error {
-	l.RuleMu.Lock()
-	defer l.RuleMu.Unlock()
+	// P-01: build the (potentially expensive) regexes and route matcher
+	// OUTSIDE the write lock. regexp.Compile and buildXrayRouteMatcher — which
+	// loads geosite.dat/geoip.dat — can take milliseconds, and every
+	// per-connection rule check (CheckDomainRule/IPRule/... ) RLocks the same
+	// RuleMu, so holding the write lock across construction stalls the whole
+	// data path on each rule update. We hold the lock only for the swap.
 
 	// Domain rules (block)
-	l.DomainRules = make([]*regexp.Regexp, 0, len(rule.Regexp))
+	domainRules := make([]*regexp.Regexp, 0, len(rule.Regexp))
 	for i := range rule.Regexp {
 		re, err := regexp.Compile(rule.Regexp[i])
 		if err != nil {
+			// Fail before touching any live state — the old rules stay intact.
 			return fmt.Errorf("compile rule regexp %q error: %w", rule.Regexp[i], err)
 		}
-		l.DomainRules = append(l.DomainRules, re)
+		domainRules = append(domainRules, re)
 	}
-	// Protocol rules
-	l.ProtocolRules = rule.Protocol
 
 	// IP rules (block_ip)
-	l.IPRules = make([]*net.IPNet, 0, len(rule.InboundIP))
+	ipRules := make([]*net.IPNet, 0, len(rule.InboundIP))
 	for _, ipStr := range rule.InboundIP {
 		if !strings.Contains(ipStr, "/") {
 			// Single IP, convert to /32 or /128
@@ -119,36 +122,44 @@ func (l *Limiter) UpdateRule(rule *panel.Rules) error {
 		if err != nil {
 			continue
 		}
-		l.IPRules = append(l.IPRules, cidr)
+		ipRules = append(ipRules, cidr)
 	}
 
 	// Port rules (block_port)
-	l.PortRules = make([]PortRange, 0, len(rule.InboundPort))
+	portRules := make([]PortRange, 0, len(rule.InboundPort))
 	for _, portStr := range rule.InboundPort {
 		if strings.Contains(portStr, "-") {
 			parts := strings.SplitN(portStr, "-", 2)
 			min, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
 			max, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
 			if err1 == nil && err2 == nil {
-				l.PortRules = append(l.PortRules, PortRange{Min: min, Max: max})
+				portRules = append(portRules, PortRange{Min: min, Max: max})
 			}
 		} else {
 			port, err := strconv.Atoi(strings.TrimSpace(portStr))
 			if err == nil {
-				l.PortRules = append(l.PortRules, PortRange{Min: port, Max: port})
+				portRules = append(portRules, PortRange{Min: port, Max: port})
 			}
 		}
 	}
 
 	// Route rules — build Xray-native matcher supporting geosite/geoip/domain/etc.
-	// This replaces the old regexp-based matching that couldn't handle geosite: patterns.
 	// Mirrors v2node's approach: panel match values are passed directly to Xray's router config.
-	l.RouteRules = rule.RouteRules
-	l.DefaultOutbound = rule.DefaultOut
-	l.RouteMatcher = buildXrayRouteMatcher(rule.RouteRules, rule.DefaultOut)
-	if l.RouteMatcher != nil {
+	routeMatcher := buildXrayRouteMatcher(rule.RouteRules, rule.DefaultOut)
+	if routeMatcher != nil {
 		log.Infof("Route matcher built with %d route rules", len(rule.RouteRules))
 	}
+
+	// Swap under the write lock — cheap assignments only.
+	l.RuleMu.Lock()
+	l.DomainRules = domainRules
+	l.ProtocolRules = rule.Protocol
+	l.IPRules = ipRules
+	l.PortRules = portRules
+	l.RouteRules = rule.RouteRules
+	l.DefaultOutbound = rule.DefaultOut
+	l.RouteMatcher = routeMatcher
+	l.RuleMu.Unlock()
 
 	return nil
 }

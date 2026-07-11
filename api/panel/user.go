@@ -9,7 +9,6 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 
-	"github.com/sirupsen/logrus"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
@@ -136,16 +135,22 @@ func (c *Client) GetUserAliveCtx(ctx context.Context) (map[int]int, error) {
 		return nil, fmt.Errorf("get user alive: nil response")
 	}
 	defer r.RawResponse.Body.Close()
-	if r.StatusCode() >= 399 {
-		// Endpoint may be unimplemented by the panel (Xboard). Treat as
-		// "feature unsupported" — empty map, no error.
+	// H-03: distinguish "endpoint not implemented" from real failures. Only
+	// 404/405/501 mean the panel genuinely lacks the alivelist endpoint —
+	// those keep the empty-but-no-error semantics so unsupported panels work.
+	// Auth (401/403), rate-limit (429) and server errors (5xx) are NOT
+	// "unsupported": returning an empty map for them would fail-open and
+	// silently disable device limiting. Propagate them (and decode failures)
+	// as errors so the caller preserves the previous AliveList snapshot.
+	switch code := r.StatusCode(); {
+	case code == 404 || code == 405 || code == 501:
 		c.AliveMap.Alive = make(map[int]int)
 		return c.AliveMap.Alive, nil
+	case code >= 400:
+		return nil, fmt.Errorf("get user alive: unexpected status %d", code)
 	}
 	if err := json.Unmarshal(r.Body(), c.AliveMap); err != nil {
-		// Malformed body but reachable endpoint: log and degrade to empty.
-		logrus.WithField("err", err).Warn("unmarshal user alive list error, alivelist may not be supported by panel")
-		c.AliveMap.Alive = make(map[int]int)
+		return nil, fmt.Errorf("get user alive: decode body: %w", err)
 	}
 
 	return c.AliveMap.Alive, nil

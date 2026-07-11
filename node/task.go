@@ -96,9 +96,22 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 	}
 
 	if newN != nil {
-		// Node config hash changed — update metadata only, DO NOT tear down
-		// the inbound handler to avoid disconnecting all active users.
-		// Full inbound rebuild is only done on config file change (via watcher).
+		// H-10: if a security-relevant field changed (port / TLS / Reality /
+		// network / cipher / flow), the inbound listener must be rebuilt for
+		// the change to take effect. A metadata-only refresh leaves the old
+		// listener serving the stale config until a full file reload, so the
+		// panel would show new settings the node never actually applies.
+		// Rebuild transactionally (rolls back on failure). Non-security changes
+		// still take the cheap metadata-only path below (no disconnects).
+		if inboundSignature(c.info.Load()) != inboundSignature(newN) {
+			log.WithField("tag", c.tag).Info("Node security config changed, rebuilding inbound")
+			if rerr := c.rebuildInbound(newN); rerr != nil {
+				log.WithFields(log.Fields{"tag": c.tag, "err": rerr}).Error("Rebuild inbound failed")
+			}
+		}
+		// Metadata refresh — DO NOT tear down the inbound here (that path is
+		// the security-change rebuild above); this keeps active users connected
+		// for the common metadata-only change.
 		log.WithField("tag", c.tag).Info("Node config updated, refreshing metadata")
 		// W2.4: atomic publish — readers (reportUserTrafficTask, hot path)
 		// always observe a consistent NodeInfo.

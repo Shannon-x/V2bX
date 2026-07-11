@@ -237,8 +237,11 @@ func (c *Client) GetNodeInfoCtx(ctx context.Context) (node *NodeInfo, err error)
 	if c.responseBodyHash == newBodyHash {
 		return nil, nil
 	}
-	c.responseBodyHash = newBodyHash
-	c.nodeEtag = r.Header().Get("ETag")
+	// H-09: DO NOT commit responseBodyHash / nodeEtag here. If the body below
+	// fails to decode/validate, committing them now would make the next poll
+	// treat this same (bad) response as "unchanged" (hash match) or let the
+	// panel answer 304 (ETag match) — freezing the stale config indefinitely.
+	// They are committed only just before the successful return.
 	node = &NodeInfo{
 		Id:   c.NodeId,
 		Type: c.NodeType,
@@ -528,6 +531,11 @@ func (c *Client) GetNodeInfoCtx(ctx context.Context) (node *NodeInfo, err error)
 	cm.Routes = nil
 	cm.BaseConfig = nil
 
+	// H-09: commit the cache markers only now that decode + shaping fully
+	// succeeded, so a malformed response can never poison the "unchanged" /
+	// 304 fast-paths and strand the old config.
+	c.responseBodyHash = newBodyHash
+	c.nodeEtag = r.Header().Get("ETag")
 	return node, nil
 }
 

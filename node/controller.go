@@ -53,6 +53,77 @@ func NewController(server vCore.Core, api *panel.Client, nodeConf *conf.NodeConf
 	return controller
 }
 
+// inboundSignature captures the NodeInfo fields that determine how the inbound
+// listener is built — port, security mode, transport, TLS/Reality params,
+// cipher, flow. If two NodeInfos share a signature a metadata-only refresh is
+// enough; if it changes, the inbound must be rebuilt (H-10), otherwise a
+// panel-side edit to port/TLS/network/cipher silently no-ops until a full
+// config-file reload.
+func inboundSignature(n *panel.NodeInfo) string {
+	if n == nil {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "type=%s|sec=%d|", n.Type, n.Security)
+	if n.Common != nil {
+		fmt.Fprintf(&b, "port=%d|", n.Common.ServerPort)
+	}
+	if n.VAllss != nil {
+		v := n.VAllss
+		// NetworkSettings is the field buildInbound actually consumes.
+		fmt.Fprintf(&b, "net=%s|flow=%s|enc=%s|sni=%s|ns=%s|tls=%+v|",
+			v.Network, v.Flow, v.Encryption, v.ServerName,
+			string(v.NetworkSettings), v.TlsSettings)
+	}
+	if n.Trojan != nil {
+		fmt.Fprintf(&b, "tnet=%s|tns=%s|", n.Trojan.Network, string(n.Trojan.NetworkSettings))
+	}
+	if n.Shadowsocks != nil {
+		fmt.Fprintf(&b, "cipher=%s|key=%s|", n.Shadowsocks.Cipher, n.Shadowsocks.ServerKey)
+	}
+	return b.String()
+}
+
+// rebuildInbound transactionally replaces the running inbound with one built
+// from newN and re-adds the current users. On failure it rolls back to the
+// previous inbound so the node is not left down. H-10: called from the poll
+// path when a security-relevant field changed. This briefly drops connections
+// on the affected node — unavoidable when the listen port / TLS / transport
+// genuinely changes — but is the only way the change takes effect without a
+// full process reload.
+func (c *Controller) rebuildInbound(newN *panel.NodeInfo) error {
+	old := c.info.Load()
+	if newN.Security == panel.Tls {
+		if err := c.requestCert(); err != nil {
+			return fmt.Errorf("request cert: %w", err)
+		}
+	}
+	if err := c.server.DelNode(c.tag); err != nil {
+		return fmt.Errorf("del old node: %w", err)
+	}
+	if err := c.server.AddNode(c.tag, newN, c.Options); err != nil {
+		// Roll back to the previous inbound so the node keeps serving.
+		if old != nil {
+			if rerr := c.server.AddNode(c.tag, old, c.Options); rerr != nil {
+				log.WithField("tag", c.tag).Errorf("rebuild rollback AddNode failed — node DOWN: %v", rerr)
+			} else if _, uerr := c.server.AddUsers(&vCore.AddUsersParams{Tag: c.tag, NodeInfo: old, Users: c.userList}); uerr != nil {
+				log.WithField("tag", c.tag).Errorf("rebuild rollback AddUsers failed: %v", uerr)
+			} else {
+				log.WithField("tag", c.tag).Warn("Inbound rebuild failed; rolled back to previous inbound")
+			}
+		}
+		return fmt.Errorf("add new node: %w", err)
+	}
+	if _, err := c.server.AddUsers(&vCore.AddUsersParams{Tag: c.tag, NodeInfo: newN, Users: c.userList}); err != nil {
+		return fmt.Errorf("re-add users: %w", err)
+	}
+	if err := c.server.AddNodeCustomOutbounds(newN, c.Options); err != nil {
+		log.WithField("tag", c.tag).Warnf("rebuild: add custom outbounds error: %v", err)
+	}
+	log.WithField("tag", c.tag).Info("Inbound rebuilt for changed security config (port/TLS/network/cipher)")
+	return nil
+}
+
 // Start implement the Start() function of the service interface
 func (c *Controller) Start() error {
 	// First fetch Node Info

@@ -31,7 +31,13 @@ type Controller struct {
 	// W2.4 / audit #4 #16: info is replaced on every nodeInfoMonitor tick
 	// and concurrently read by reportUserTrafficTask. atomic.Pointer keeps
 	// reads racefree without forcing every caller through a mutex.
-	info                      atomic.Pointer[panel.NodeInfo]
+	info atomic.Pointer[panel.NodeInfo]
+	// appliedSig is the inboundSignature of the config the LIVE inbound
+	// listener was actually built with. The poll path compares it against the
+	// desired (panel) config each cycle to detect, apply and retry a needed
+	// rebuild (H-10). Touched only from Start and the serial nodeInfoMonitor
+	// (Start completes before the periodic tasks run), so no lock is needed.
+	appliedSig                string
 	nodeInfoMonitorPeriodic   *task.Task
 	userReportPeriodic        *task.Task
 	renewCertPeriodic         *task.Task
@@ -120,7 +126,9 @@ func (c *Controller) rebuildInbound(newN *panel.NodeInfo) error {
 	if err := c.server.AddNodeCustomOutbounds(newN, c.Options); err != nil {
 		log.WithField("tag", c.tag).Warnf("rebuild: add custom outbounds error: %v", err)
 	}
-	log.WithField("tag", c.tag).Info("Inbound rebuilt for changed security config (port/TLS/network/cipher)")
+	// Live inbound now matches newN; stop the poll path from rebuilding again.
+	c.appliedSig = inboundSignature(newN)
+	log.WithField("tag", c.tag).Info("Inbound rebuilt; new node config applied (port/TLS/network/cipher)")
 	return nil
 }
 
@@ -217,6 +225,9 @@ func (c *Controller) Start() error {
 	}
 	log.WithField("tag", c.tag).Infof("Added %d new users", added)
 	c.info.Store(node)
+	// Record what the live inbound was built with, so the poll path only
+	// rebuilds when the panel config actually diverges from it (H-10).
+	c.appliedSig = inboundSignature(node)
 	c.startTasks(node)
 	started = true // success — disarm the rollback defer
 	return nil

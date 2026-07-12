@@ -42,6 +42,7 @@ type Limiter struct {
 	UUIDtoUID     sync.Map  // Key: UUID, value: Uid (lock-free, read-heavy)
 	UserLimitInfo *sync.Map // Key: TagUUID value: UserLimitInfo
 	SpeedLimiter  *sync.Map // key: TagUUID, value: *rate.DynamicBucket
+	aliveMu       sync.Mutex
 	AliveList     atomic.Pointer[map[int]int]
 }
 
@@ -59,6 +60,10 @@ type UserLimitInfo struct {
 	DynamicSpeedLimit atomic.Int64
 	ExpireTime        atomic.Int64
 	OverLimit         atomic.Bool
+	// deviceMu serializes admission of previously-unreported IPs for this
+	// device-limited user. Without it, a burst can let several new IPs all
+	// observe the same stale panel count before any of them is reported.
+	deviceMu sync.Mutex
 
 	// W6.1 / W3.6 后半 / audit #3: short-window cache so hy2 logger's
 	// per-stream callbacks don't re-run the full CheckLimit (which walks
@@ -140,6 +145,7 @@ func DeleteLimiter(tag string) {
 func (l *Limiter) UpdateUser(tag string, added []panel.UserInfo, deleted []panel.UserInfo, modified []panel.UserInfo) {
 	if len(deleted) > 0 {
 		// Copy-on-write for AliveList to avoid concurrent map write panic
+		l.aliveMu.Lock()
 		if al := l.AliveList.Load(); al != nil {
 			newAl := make(map[int]int, len(*al))
 			for k, v := range *al {
@@ -150,6 +156,7 @@ func (l *Limiter) UpdateUser(tag string, added []panel.UserInfo, deleted []panel
 			}
 			l.AliveList.Store(&newAl)
 		}
+		l.aliveMu.Unlock()
 	}
 	for i := range deleted {
 		taguuid := format.UserTag(tag, deleted[i].Uuid)
@@ -222,6 +229,105 @@ func (l *Limiter) getAliveIp(uid int) int {
 	return 0
 }
 
+// ReplaceAliveCounts publishes a complete panel snapshot. The small writer
+// mutex prevents a concurrent report delta from being lost between Load and
+// Store; readers remain lock-free through atomic.Pointer.
+func (l *Limiter) ReplaceAliveCounts(counts map[int]int) {
+	replacement := make(map[int]int, len(counts))
+	for uid, count := range counts {
+		if count > 0 {
+			replacement[uid] = count
+		}
+	}
+	l.aliveMu.Lock()
+	l.AliveList.Store(&replacement)
+	l.aliveMu.Unlock()
+}
+
+// MergeAliveCounts applies the per-user count delta returned by a successful
+// device report. A zero count removes the user from the sparse AliveList map.
+// Copy-on-write keeps concurrent CheckLimit readers race-free.
+func (l *Limiter) MergeAliveCounts(delta map[int]int) {
+	if len(delta) == 0 {
+		return
+	}
+	l.aliveMu.Lock()
+	defer l.aliveMu.Unlock()
+	current := l.AliveList.Load()
+	merged := make(map[int]int, len(delta))
+	if current != nil {
+		merged = make(map[int]int, len(*current)+len(delta))
+		for uid, count := range *current {
+			merged[uid] = count
+		}
+	}
+	for uid, count := range delta {
+		if count > 0 {
+			merged[uid] = count
+		} else {
+			delete(merged, uid)
+		}
+	}
+	l.AliveList.Store(&merged)
+}
+
+// trackDevice registers the source IP and rejects it when the panel's last
+// global count plus this node's not-yet-reported IPs would exceed deviceLimit.
+// The panel count alone is necessarily one reporting cycle behind; including
+// local pending IPs closes the same-node burst bypass without adding a network
+// call to the connection hot path.
+func (l *Limiter) trackDevice(taguuid, ip string, info *UserLimitInfo, deviceLimit int) bool {
+	if deviceLimit > 0 {
+		info.deviceMu.Lock()
+		defer info.deviceMu.Unlock()
+	}
+
+	var ipMap *sync.Map
+	if value, ok := l.UserOnlineIP.Load(taguuid); ok {
+		ipMap = value.(*sync.Map)
+	} else {
+		candidate := new(sync.Map)
+		value, _ := l.UserOnlineIP.LoadOrStore(taguuid, candidate)
+		ipMap = value.(*sync.Map)
+	}
+
+	if _, loaded := ipMap.LoadOrStore(ip, info.UID); loaded {
+		return false
+	}
+	if deviceLimit <= 0 {
+		return false
+	}
+
+	l.oldOnlineMu.RLock()
+	oldOnline := l.OldUserOnline
+	l.oldOnlineMu.RUnlock()
+
+	// An IP present in the previous successful reporting window is already
+	// included in AliveList, so it must not be counted again as pending.
+	if oldUID, ok := oldOnline.Load(ip); ok && oldUID.(int) == info.UID {
+		return false
+	}
+
+	pending := 0
+	ipMap.Range(func(key, value any) bool {
+		candidateIP, ok := key.(string)
+		if !ok || value.(int) != info.UID {
+			return true
+		}
+		if oldUID, existed := oldOnline.Load(candidateIP); existed && oldUID.(int) == info.UID {
+			return true
+		}
+		pending++
+		return true
+	})
+
+	if l.getAliveIp(info.UID)+pending > deviceLimit {
+		ipMap.Delete(ip)
+		return true
+	}
+	return false
+}
+
 // CheckLimit returns a *rate.DynamicBucket so that existing connections
 // automatically see rate updates via DynamicBucket.Get().
 func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool) (bucket *rate.DynamicBucket, Reject bool) {
@@ -230,13 +336,13 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 	nodeLimit := l.SpeedLimit
 	userLimit := 0
 	deviceLimit := 0
-	var uid int
+	var userLimitInfo *UserLimitInfo
 	if v, ok := l.UserLimitInfo.Load(taguuid); ok {
 		u := v.(*UserLimitInfo)
+		userLimitInfo = u
 		// W2.6: atomic loads — CheckLimit runs on every new connection and
 		// races with UpdateUser/UpdateDynamicSpeedLimit/expiry resets.
 		deviceLimit = int(u.DeviceLimit.Load())
-		uid = u.UID
 		expire := u.ExpireTime.Load()
 		speedLimit := int(u.SpeedLimit.Load())
 		if expire < time.Now().Unix() && expire != 0 {
@@ -256,71 +362,8 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 
 	// Device limit check — only for source-TCP connections (matching v2node)
 	if noSSUDP || l.NodeType == "hysteria2" {
-		aliveIp := l.getAliveIp(uid)
-
-		// W3.7 / audit #24: steady-state fast path — try Load first; only
-		// allocate the per-tag sync.Map on the very first connection for a
-		// given user. The previous code unconditionally allocated and
-		// discarded one per CheckLimit call (~5k connections/sec × 100k
-		// users = ~5k sync.Map heads per second wasted on GC).
-		var oldipMap *sync.Map
-		if v, ok := l.UserOnlineIP.Load(taguuid); ok {
-			oldipMap = v.(*sync.Map)
-			// If this is a new ip
-			if _, loaded2 := oldipMap.LoadOrStore(ip, uid); !loaded2 {
-				l.oldOnlineMu.RLock()
-				oldOnline := l.OldUserOnline
-				l.oldOnlineMu.RUnlock()
-
-				if v2, loaded3 := oldOnline.Load(ip); loaded3 {
-					if v2.(int) == uid {
-						oldOnline.Delete(ip)
-					}
-				} else if deviceLimit > 0 {
-					if deviceLimit <= aliveIp {
-						oldipMap.Delete(ip)
-						return nil, true
-					}
-				}
-			}
-		} else {
-			// Cold path: first connection for this taguuid in this cycle.
-			newipMap := new(sync.Map)
-			newipMap.Store(ip, uid)
-			if v, loaded := l.UserOnlineIP.LoadOrStore(taguuid, newipMap); loaded {
-				// Lost the LoadOrStore race; reuse the winner and re-attempt
-				// the new-ip check against it.
-				oldipMap = v.(*sync.Map)
-				if _, loaded2 := oldipMap.LoadOrStore(ip, uid); !loaded2 {
-					l.oldOnlineMu.RLock()
-					oldOnline := l.OldUserOnline
-					l.oldOnlineMu.RUnlock()
-					if v2, loaded3 := oldOnline.Load(ip); loaded3 {
-						if v2.(int) == uid {
-							oldOnline.Delete(ip)
-						}
-					} else if deviceLimit > 0 {
-						if deviceLimit <= aliveIp {
-							oldipMap.Delete(ip)
-							return nil, true
-						}
-					}
-				}
-			} else {
-				// We won — newipMap is the canonical entry.
-				l.oldOnlineMu.RLock()
-				oldOnline := l.OldUserOnline
-				l.oldOnlineMu.RUnlock()
-
-				if v2, ok := oldOnline.Load(ip); ok {
-					if v2.(int) == uid {
-						oldOnline.Delete(ip)
-					}
-				} else if deviceLimit > 0 && deviceLimit <= aliveIp {
-					l.UserOnlineIP.Delete(taguuid)
-					return nil, true
-				}
-			}
+		if l.trackDevice(taguuid, ip, userLimitInfo, deviceLimit) {
+			return nil, true
 		}
 	}
 
@@ -345,6 +388,12 @@ func (l *Limiter) GetOnlineDevice() ([]panel.OnlineUser, error) {
 
 	l.UserOnlineIP.Range(func(key, value interface{}) bool {
 		taguuid := key.(string)
+		var info *UserLimitInfo
+		if value, ok := l.UserLimitInfo.Load(taguuid); ok {
+			info = value.(*UserLimitInfo)
+			info.deviceMu.Lock()
+			defer info.deviceMu.Unlock()
+		}
 		ipMap := value.(*sync.Map)
 		ipMap.Range(func(key, value interface{}) bool {
 			uid := value.(int)

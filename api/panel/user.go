@@ -104,9 +104,9 @@ func (c *Client) GetUserListCtx(ctx context.Context) ([]UserInfo, error) {
 }
 
 // GetUserAlive will fetch the alive_ip count for users.
-// Note: Xboard does not provide the /alivelist endpoint, so this will
-// gracefully return an empty map. The device_limit feature requires
-// panel support for this endpoint to function properly.
+// Older panels may not provide /alivelist, so an unsupported endpoint
+// gracefully returns an empty map. Device limiting requires panel support for
+// this endpoint; current Xboard-sh versions provide it.
 //
 // W1.8 / audit #43: previously every failure path returned (emptyMap, nil),
 // indistinguishable from "panel returned no alive users". The caller would
@@ -187,6 +187,13 @@ func (c *Client) ReportNodeOnlineUsers(data *map[int][]string) error {
 
 // ReportNodeOnlineUsersCtx is the ctx-aware variant. W3.2 / W3.4.
 func (c *Client) ReportNodeOnlineUsersCtx(ctx context.Context, data *map[int][]string) error {
+	_, err := c.ReportNodeOnlineUsersWithDeltaCtx(ctx, data)
+	return err
+}
+
+// Newer Xboard versions return an `alive` delta for the users affected by this
+// full snapshot. Older panels omit it; nil remains backward-compatible.
+func (c *Client) ReportNodeOnlineUsersWithDeltaCtx(ctx context.Context, data *map[int][]string) (map[int]int, error) {
 	const path = "/api/v1/server/UniProxy/alive"
 	r, err := c.client.R().
 		SetContext(ctx).
@@ -195,7 +202,18 @@ func (c *Client) ReportNodeOnlineUsersCtx(ctx context.Context, data *map[int][]s
 		Post(path)
 	err = c.checkResponse(r, path, err)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+
+	response := &AliveMap{}
+	if len(r.Body()) == 0 {
+		return nil, nil
+	}
+	if err := json.Unmarshal(r.Body(), response); err != nil {
+		// The snapshot itself was accepted; an old or custom panel may return a
+		// non-JSON body. Keep compatibility and simply skip the fast delta.
+		logrus.WithField("err", err).Debug("alive report response has no usable count delta")
+		return nil, nil
+	}
+	return response.Alive, nil
 }

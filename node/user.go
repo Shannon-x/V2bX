@@ -35,11 +35,10 @@ func (c *Controller) reportUserTrafficTask(ctx context.Context) (err error) {
 		}
 	}
 
-	if onlineDevice, err := c.limiter.GetOnlineDevice(); err != nil {
-		log.Print(err)
-	} else if len(onlineDevice) > 0 {
-		var result []panel.OnlineUser
-		var nocountUID = make(map[int]struct{})
+	onlineDevice, deviceErr := c.limiter.GetOnlineDevice()
+	if deviceErr != nil {
+		log.Print(deviceErr)
+	} else {
 		minTraffic := c.Options.DeviceOnlineMinTraffic
 		// W2.4: atomic snapshot of NodeInfo; tolerate the brief window where
 		// info is nil during startup.
@@ -47,34 +46,44 @@ func (c *Controller) reportUserTrafficTask(ctx context.Context) (err error) {
 		if curInfo != nil && curInfo.DeviceOnlineMinTraffic > 0 {
 			minTraffic = int64(curInfo.DeviceOnlineMinTraffic)
 		}
-		for _, traffic := range userTraffic {
-			total := traffic.Upload + traffic.Download
-			if total < minTraffic*1000 {
-				nocountUID[traffic.UID] = struct{}{}
-			}
-		}
-		for _, online := range onlineDevice {
-			if _, ok := nocountUID[online.UID]; !ok {
-				result = append(result, online)
-			}
-		}
-		data := make(map[int][]string)
-		for _, onlineuser := range result {
-			data[onlineuser.UID] = append(data[onlineuser.UID], onlineuser.IP)
-		}
-		if err = c.getAPIClient().ReportNodeOnlineUsersCtx(ctx, &data); err != nil {
+		data, reported := buildOnlineDeviceReport(onlineDevice, userTraffic, minTraffic)
+		aliveDelta, reportErr := c.getAPIClient().ReportNodeOnlineUsersWithDeltaCtx(ctx, &data)
+		if reportErr != nil {
 			log.WithFields(log.Fields{
 				"tag": c.tag,
-				"err": err,
+				"err": reportErr,
 			}).Info("Report online users failed")
 		} else {
-			log.WithField("tag", c.tag).Infof("Total %d online users, %d Reported", len(onlineDevice), len(result))
+			// Apply the panel's post-snapshot count immediately instead of
+			// waiting for the next pull interval before unblocking recovered users.
+			c.limiter.MergeAliveCounts(aliveDelta)
+			log.WithField("tag", c.tag).Infof("Total %d online users, %d Reported", len(onlineDevice), reported)
 			log.WithField("tag", c.tag).Debugf("Online users: %+v", data)
 		}
 	}
 
 	userTraffic = nil
 	return nil
+}
+
+func buildOnlineDeviceReport(onlineDevice []panel.OnlineUser, userTraffic []panel.UserTraffic, minTraffic int64) (map[int][]string, int) {
+	nocountUID := make(map[int]struct{})
+	for _, traffic := range userTraffic {
+		if traffic.Upload+traffic.Download < minTraffic*1000 {
+			nocountUID[traffic.UID] = struct{}{}
+		}
+	}
+
+	data := make(map[int][]string)
+	reported := 0
+	for _, online := range onlineDevice {
+		if _, skip := nocountUID[online.UID]; skip {
+			continue
+		}
+		data[online.UID] = append(data[online.UID], online.IP)
+		reported++
+	}
+	return data, reported
 }
 
 func compareUserList(old, new []panel.UserInfo) (deleted, added, modified []panel.UserInfo) {

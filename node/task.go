@@ -108,7 +108,7 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 
 		// Update alive list
 		if newA != nil {
-			c.limiter.AliveList.Store(&newA)
+			c.limiter.ReplaceAliveCounts(newA)
 		}
 
 		// Update rules
@@ -181,7 +181,7 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 
 	// update alive list
 	if newA != nil {
-		c.limiter.AliveList.Store(&newA)
+		c.limiter.ReplaceAliveCounts(newA)
 	}
 
 	// check users

@@ -530,6 +530,9 @@ add_node_config() {
         if [[ "$core_hysteria2" == true || "$core_xray" == true ]]; then
             echo -e "${green}5. Hysteria2${plain}"
         fi
+        if [[ "$core_sing" == true ]]; then
+            echo -e "${green}6. AnyTLS${plain}（sing-box 内核，强制 TLS）"
+        fi
         read -rp "请输入：" NodeType
         case "$NodeType" in
             1 ) NodeType="shadowsocks" ;;
@@ -537,6 +540,7 @@ add_node_config() {
             3 ) NodeType="vmess" ;;
             4 ) NodeType="trojan" ;;
             5 ) NodeType="hysteria2" ;;
+            6 ) NodeType="anytls" ;;
             * ) NodeType="shadowsocks" ;;
         esac
     fi
@@ -571,6 +575,9 @@ add_node_config() {
         istls="y"
     elif [ "$NodeType" == "hysteria2" ]; then
         enable_tfo=false
+        istls="y"
+    elif [ "$NodeType" == "anytls" ]; then
+        # AnyTLS 协议建立在 TLS 之上，必须配置证书，这里强制走 TLS 流程
         istls="y"
     fi
 

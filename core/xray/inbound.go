@@ -177,6 +177,13 @@ func buildInbound(option *conf.Options, nodeInfo *panel.NodeInfo, tag string) (*
 		// Reality
 		in.StreamSetting.Security = "reality"
 		v := nodeInfo.VAllss
+		// Xray 26.7.11 changed an empty minClientVer from "no minimum" to
+		// 26.3.27. Keep V2bX compatible with older Reality clients, matching
+		// v2node, while still honoring an explicitly configured minimum.
+		minClientVer := v.RealityConfig.MinClientVer
+		if minClientVer == "" {
+			minClientVer = "0.0.1"
+		}
 		dest := v.TlsSettings.Dest
 		if dest == "" {
 			dest = v.TlsSettings.ServerName
@@ -199,7 +206,7 @@ func buildInbound(option *conf.Options, nodeInfo *panel.NodeInfo, tag string) (*
 			Show:         false,
 			ServerNames:  []string{v.TlsSettings.ServerName},
 			PrivateKey:   v.TlsSettings.PrivateKey,
-			MinClientVer: v.RealityConfig.MinClientVer,
+			MinClientVer: minClientVer,
 			MaxClientVer: v.RealityConfig.MaxClientVer,
 			MaxTimeDiff:  uint64(mtd.Microseconds()),
 			ShortIds:     []string{v.TlsSettings.ShortId},

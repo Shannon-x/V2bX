@@ -8,6 +8,7 @@ import (
 	"github.com/InazumaV/V2bX/api/panel"
 	"github.com/InazumaV/V2bX/conf"
 	"github.com/xtls/xray-core/app/proxyman"
+	"github.com/xtls/xray-core/transport/internet/reality"
 )
 
 func TestResolveTrustedXFF(t *testing.T) {
@@ -139,5 +140,66 @@ func TestBuildInboundDisableCDNRealIP(t *testing.T) {
 	if ss := rc.StreamSettings; ss != nil && ss.SocketSettings != nil &&
 		len(ss.SocketSettings.TrustedXForwardedFor) > 0 {
 		t.Fatalf("TrustedXForwardedFor set despite DisableCDNRealIP: %v", ss.SocketSettings.TrustedXForwardedFor)
+	}
+}
+
+func buildTestRealityConfig(t *testing.T, minClientVer string) *reality.Config {
+	t.Helper()
+	option := &conf.Options{
+		ListenIP:    "0.0.0.0",
+		XrayOptions: &conf.XrayOptions{},
+	}
+	nodeInfo := &panel.NodeInfo{
+		Type:     "vless",
+		Security: panel.Reality,
+		VAllss: &panel.VAllssNode{
+			Network: "tcp",
+			TlsSettings: panel.TlsSettings{
+				ServerName: "example.com",
+				Dest:       "example.com",
+				ServerPort: "443",
+				ShortId:    "0123456789abcdef",
+				PrivateKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+			},
+			RealityConfig: panel.RealityConfig{MinClientVer: minClientVer},
+		},
+		Common: &panel.CommonNode{ServerPort: 10086},
+	}
+	ihc, err := buildInbound(option, nodeInfo, "test-reality")
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiverMessage, err := ihc.ReceiverSettings.GetInstance()
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiver := receiverMessage.(*proxyman.ReceiverConfig)
+	if receiver.StreamSettings == nil || len(receiver.StreamSettings.SecuritySettings) != 1 {
+		t.Fatalf("unexpected Reality security settings: %#v", receiver.StreamSettings)
+	}
+	securityMessage, err := receiver.StreamSettings.SecuritySettings[0].GetInstance()
+	if err != nil {
+		t.Fatal(err)
+	}
+	realityConfig, ok := securityMessage.(*reality.Config)
+	if !ok {
+		t.Fatalf("security settings type = %T, want *reality.Config", securityMessage)
+	}
+	return realityConfig
+}
+
+// Xray 26.7.11 defaults an omitted minClientVer to 26.3.27. V2bX must write
+// the v2node-compatible value explicitly so older Reality clients keep working.
+func TestBuildRealityInboundUsesCompatibleMinimumClientVersion(t *testing.T) {
+	config := buildTestRealityConfig(t, "")
+	if got, want := config.MinClientVer, []byte{0, 0, 1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("MinClientVer = %v, want %v", got, want)
+	}
+}
+
+func TestBuildRealityInboundPreservesExplicitMinimumClientVersion(t *testing.T) {
+	config := buildTestRealityConfig(t, "26.3.27")
+	if got, want := config.MinClientVer, []byte{26, 3, 27}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("MinClientVer = %v, want %v", got, want)
 	}
 }

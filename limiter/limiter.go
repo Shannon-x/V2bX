@@ -308,20 +308,17 @@ func (l *Limiter) trackDevice(taguuid, ip string, info *UserLimitInfo, deviceLim
 		return false
 	}
 
-	pending := 0
-	ipMap.Range(func(key, value any) bool {
-		candidateIP, ok := key.(string)
-		if !ok || value.(int) != info.UID {
-			return true
-		}
-		if oldUID, existed := oldOnline.Load(candidateIP); existed && oldUID.(int) == info.UID {
-			return true
-		}
-		pending++
-		return true
-	})
-
-	if l.getAliveIp(info.UID)+pending > deviceLimit {
+	// Reject only when the panel's global alive-IP count has already reached
+	// the device limit — matching the reference v2node behaviour
+	// (deviceLimit <= aliveIp). We deliberately DO NOT also tally this node's
+	// not-yet-reported local IPs on top of it: under Proxy Protocol the
+	// connection source is the real client IP (often mobile, which changes IP
+	// frequently), so counting the still-in-AliveList old IP AND the new local
+	// IP together over-counts and rejects legitimate reconnects — which is
+	// exactly what makes the node intermittently time out once Proxy Protocol
+	// is enabled. The panel's periodic alive count is the single source of
+	// truth for cross-node device counting.
+	if deviceLimit <= l.getAliveIp(info.UID) {
 		ipMap.Delete(ip)
 		return true
 	}

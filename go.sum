@@ -175,10 +175,10 @@ github.com/anthropics/anthropic-sdk-go v1.26.0/go.mod h1:qUKmaW+uuPB64iy1l+4kOSv
 github.com/antihax/optional v1.0.0/go.mod h1:uupD/76wgC+ih3iEmQUL+0Ugr19nfwCT1kdvxnR2qWY=
 github.com/anytls/sing-anytls v0.0.11 h1:w8e9Uj1oP3m4zxkyZDewPk0EcQbvVxb7Nn+rapEx4fc=
 github.com/anytls/sing-anytls v0.0.11/go.mod h1:7rjN6IukwysmdusYsrV51Fgu1uW6vsrdd6ctjnEAln8=
-github.com/apernet/hysteria/core/v2 v2.9.3 h1:BwJM1nCY3oLG7KQE32HRJczQAfSKgYfIw+qa/USu4do=
-github.com/apernet/hysteria/core/v2 v2.9.3/go.mod h1:Iy4fgHAVfF8EmWWHqCfs0TPmW+bpbYslyEkasgUwdx8=
-github.com/apernet/hysteria/extras/v2 v2.12.1 h1:pLtKedlKSUHGCuUxeVaOOI2UUPlj/5DaqXm01FGrF7U=
-github.com/apernet/hysteria/extras/v2 v2.12.1/go.mod h1:QzIFayY1vN8qxX/VpZF+7CGguFpbKDvxbSRp9FmX9V4=
+github.com/apernet/hysteria/core/v2 v2.9.2 h1:dpqMyopdyvohtNTkB7H471RIQBJ3qNnEk14+UJkiDX0=
+github.com/apernet/hysteria/core/v2 v2.9.2/go.mod h1:b9dPkAisksVDpmqc4+7L9/S/ox0CEAJh/+Pfljac5gA=
+github.com/apernet/hysteria/extras/v2 v2.9.2 h1:k/nF6M62U3thxS8en87CP60knaU51LN+eWilURvmHwo=
+github.com/apernet/hysteria/extras/v2 v2.9.2/go.mod h1:61dvzDe1Lbp/KDIW4pcOoDbLrBpissyM8WGnl8cWDfQ=
 github.com/apernet/quic-go v0.59.1-0.20260425001925-6c6cc9bcb716 h1:J1O+xpLuJWkdYbw5JPGwBqIHs2J8tiEP7Py9lPqkN2I=
 github.com/apernet/quic-go v0.59.1-0.20260425001925-6c6cc9bcb716/go.mod h1:Npbg8qBtAZlsAB3FWmqwlVh5jtVG6a4DlYsOylUpvzA=
 github.com/armon/circbuf v0.0.0-20150827004946-bbbad097214e/go.mod h1:3U/XgcO3hCbHZ8TKRvWD2dDTCfh9M9ya+I9JpbB7O8o=

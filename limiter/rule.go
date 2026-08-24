@@ -161,5 +161,18 @@ func (l *Limiter) UpdateRule(rule *panel.Rules) error {
 	l.RouteMatcher = routeMatcher
 	l.RuleMu.Unlock()
 
+	l.hasBlockRules.Store(len(domainRules) > 0 || len(ipRules) > 0 || len(portRules) > 0)
+
+	// 面板 protocol 规则里带 bittorrent 时，顺带打开逐包 UDP 过滤。
+	// 只写 route.json / 只在面板配规则的运维都能直接受益，无需额外配置。
+	blockBT := false
+	for _, p := range rule.Protocol {
+		if strings.EqualFold(p, "bittorrent") {
+			blockBT = true
+			break
+		}
+	}
+	l.blockBTUDPRule.Store(blockBT)
+
 	return nil
 }

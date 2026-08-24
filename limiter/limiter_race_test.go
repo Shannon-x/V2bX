@@ -19,10 +19,10 @@ import (
 func TestUserLimitInfoAtomicRace(t *testing.T) {
 	Init()
 	const (
-		tag      = "race-test-tag"
-		userCnt  = 32
-		iters    = 200
-		workers  = 16
+		tag     = "race-test-tag"
+		userCnt = 32
+		iters   = 200
+		workers = 16
 	)
 
 	users := make([]panel.UserInfo, userCnt)

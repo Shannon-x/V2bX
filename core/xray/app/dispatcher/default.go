@@ -585,6 +585,22 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 					return
 				}
 			}
+			// 逐包过滤出站 UDP 里的 BitTorrent 报文。
+			//
+			// 必须放在这里而不是只依赖上面的 protocol 判定：protocol 来自嗅探，
+			// 而一个 UDP 会话只在首包嗅探一次（见 bittorrent_filter.go 顶部注释），
+			// 首包是 DNS 或 QUIC 时，后续所有 DHT 包都不会再被看到。
+			if destination.Network == net.Network_UDP && l.BlockBittorrentUDP() {
+				email := sessionInbound.User.Email
+				tag := sessionInbound.Tag
+				link.Reader = newBTUDPFilterReader(link.Reader, func() {
+					if btDropLog.Allow(tag) {
+						errors.LogError(ctx, fmt.Sprintf(
+							"User %s outbound bittorrent UDP packet dropped by rule",
+							email))
+					}
+				})
+			}
 			// Route rules (route/route_ip/direct/proxy)
 			if routeTag := l.CheckRouteRule(destStr, destIP); routeTag != "" {
 				errors.LogInfo(ctx, fmt.Sprintf(

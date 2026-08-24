@@ -721,6 +721,11 @@ generate_config_file() {
         return 0
     fi
 
+    if ! ensure_jq; then
+        echo -e "${red}jq 安装失败，无法生成路由规则。请手动安装 jq 后重试${plain}"
+        return 1
+    fi
+
     nodes_config=()
     first_node=true
     core_xray=false
@@ -870,88 +875,16 @@ EOF
 ]
 EOF
 
-    # 创建 route.json 文件
-    cat <<'EOF' > /etc/V2bX/route.json
-{
-    "domainStrategy": "AsIs",
-    "rules": [
-        {
-            "type": "field",
-            "outboundTag": "block",
-            "ip": [
-                "geoip:private"
-            ]
-        },
-        {
-            "type": "field",
-            "outboundTag": "block",
-            "domain": [
-                "regexp:(api|ps|sv|offnavi|newvector|ulog\\.imap|newloc)(\\.map|)\\.(baidu|n\\.shifen)\\.com",
-                "regexp:(.+\\.|^)(360|so)\\.(cn|com)",
-                "regexp:(Subject|HELO|SMTP)",
-                "regexp:(torrent|\\.torrent|peer_id=|info_hash|get_peers|find_node|BitTorrent|announce_peer|announce\\.php\\?passkey=)",
-                "regexp:(ed2k|\\.torrent|peer_id=|announce|info_hash|get_peers|find_node|BitTorrent|announce_peer|announce\\.php\\?passkey=|magnet:|xunlei|sandai|Thunder|XLLiveUD|bt_key)",
-                "regexp:(.*\\.||)(guanjia\\.qq\\.com|qqpcmgr|QQPCMGR)",
-                "regexp:(.*\\.||)(rising|kingsoft|duba|xindubawukong|jinshanduba)\\.(com|net|org)",
-                "regexp:(.*\\.||)(netvigator|torproject)\\.(com|cn|net|org)",
-                "regexp:(.*\\.||)(miaozhen|cnzz|talkingdata|umeng)\\.(cn|com)",
-                "regexp:(.*\\.||)(taobao)\\.(com)",
-                "regexp:(.*\\.||)(laomoe|jiyou|ssss|lolicp|vv1234|0z|4321q|868123|ksweb|mm126)\\.(com|cloud|fun|cn|gs|xyz|cc)",
-                "regexp:(flows|miaoko)\\.(pages)\\.(dev)"
-            ]
-        },
-        {
-            "type": "field",
-            "outboundTag": "block",
-            "ip": [
-                "127.0.0.1/32",
-                "10.0.0.0/8",
-                "fc00::/7",
-                "fe80::/10",
-                "172.16.0.0/12"
-            ]
-        },
-        {
-            "type": "field",
-            "outboundTag": "block",
-            "protocol": [
-                "bittorrent"
-            ]
-        },
-        {
-            "type": "field",
-            "outboundTag": "IPv4_out",
-            "network": "udp,tcp"
-        }
-    ]
-}
-EOF
+    # 生成 route.json。和菜单「更新路由禁止规则」共用 build_block_rules，
+    # 两个入口的防护强度完全一致，不会再出现「生成的配置比更新后的弱」。
+    if ! write_default_route_json /etc/V2bX/route.json; then
+        echo -e "${red}生成 route.json 失败，请检查 jq 与 geosite.dat${plain}"
+    fi
 
 
 
-    # 创建 hy2config.yaml 文件
-    cat <<'EOF' > /etc/V2bX/hy2config.yaml
-quic:
-  initStreamReceiveWindow: 16777216
-  maxStreamReceiveWindow: 16777216
-  initConnReceiveWindow: 33554432
-  maxConnReceiveWindow: 33554432
-  maxIdleTimeout: 90s
-  maxIncomingStreams: 4096
-  disablePathMTUDiscovery: false
-ignoreClientBandwidth: false
-disableUDP: false
-udpIdleTimeout: 120s
-resolver:
-  type: system
-acl:
-  inline:
-    - direct(geosite:google)
-    - reject(geosite:cn)
-    - reject(geoip:cn)
-masquerade:
-  type: 404
-EOF
+    # 生成 hy2config.yaml。ACL 与菜单「更新路由禁止规则」同源。
+    write_default_hy2config /etc/V2bX/hy2config.yaml
     echo -e "${green}V2bX 配置文件生成完成，正在重新启动 V2bX 服务${plain}"
     restart 0
     before_show_menu
@@ -1212,82 +1145,469 @@ ensure_jq() {
 
 # 只替换 route.json 里的“禁止规则”这一块 (outboundTag==block)，
 # 其它分流规则 (warp / 流媒体分流 / 自定义出站 / final / domainStrategy) 全部保留不动。
+# =====================================================
+# 更新路由禁止规则 (BT/PT/DHT/广告/竞品/杀软)
+#
+# 相比旧版的三点关键改动：
+#   1. 落地前先校验 geosite 分类是否真的存在于本机 geosite.dat。
+#      发布件里的 geosite.dat 来自 Loyalsoldier/v2ray-rules-dat，
+#      category-public-tracker / category-ipfs / category-antivirus 都是有的。
+#      但如果运维换了自建或较老的 geosite.dat（比如 v2fly 官方那份），
+#      缺分类会让 xray 在 RouterConfig.Build() 阶段 panic、节点起不来，
+#      脚本随后静默回滚——看到绿字提示，实际一直跑在旧规则上。
+#      所以这里改成「缺什么跳过什么」，而不是整份规则一起炸掉。
+#   2. 覆盖三个内核。旧版只改 xray 的 route.json，
+#      sing-box / hysteria2 节点从头到尾没有任何 BT 规则。
+#   3. 提供主机层 nftables 兜底。DHT 走的是 bencode/KRPC over UDP，
+#      三个内核的嗅探器都不认（hysteria 的 ACL 语法更是完全无法按协议匹配），
+#      只靠路由规则挡不住机房告警里那种 "BitTorrent DHT" 流量。
+# =====================================================
+
+# =====================================================
+# 禁止规则的唯一权威来源
+#
+# 菜单 15「生成配置文件」和菜单 19「更新路由禁止规则」都从这里取规则，
+# 保证两个入口产出的防护强度完全一致。改规则只需要改这一处。
+#
+# 两者的区别只在于落地方式：
+#   15  整份重写 route.json = 禁止规则 + final 出站
+#   19  只替换 outboundTag=="block" 的部分，保留运维自己加的分流规则
+# =====================================================
+
+# 判断 geosite.dat 里是否存在某个分类。分类名在 dat 里以大写存储。
+geosite_has_category() {
+    local dat="$1" name
+    name=$(printf '%s' "$2" | tr '[:lower:]' '[:upper:]')
+    [[ -f "${dat}" ]] || return 1
+    LC_ALL=C grep -ao '[A-Z0-9@!_-]\{2,\}' "${dat}" 2>/dev/null | grep -qx -- "${name}"
+}
+
+# 找到 xray 内核实际使用的 geosite.dat
+resolve_geosite_path() {
+    local asset=""
+    if [[ -f /etc/V2bX/config.json ]] && command -v jq >/dev/null 2>&1; then
+        asset=$(jq -r '(.Cores[]? | select(.Type=="xray") | .AssetPath) // empty' /etc/V2bX/config.json 2>/dev/null | head -n1)
+    fi
+    [[ -z "${asset}" ]] && asset="/etc/V2bX/"
+    echo "${asset%/}/geosite.dat"
+}
+
+# 输出禁止规则数组（JSON）到 stdout，诊断信息一律走 stderr。
+#
+# geosite 分类会按本机 geosite.dat 的实际内容裁剪：发布件用的
+# Loyalsoldier/v2ray-rules-dat 三个分类都有；换成自建或较老的 dat 时
+# 缺分类会让 xray 在 RouterConfig.Build() 阶段 panic、节点直接起不来，
+# 所以这里缺什么跳过什么，而不是让整份规则一起炸掉。
+build_block_rules() {
+    local geosite_dat c
+    local bt_cats=() ads_cats=() av_cats=() vpn_cats=()
+    geosite_dat=$(resolve_geosite_path)
+
+    if [[ ! -f "${geosite_dat}" ]]; then
+        echo -e "${yellow}未找到 ${geosite_dat}，本次跳过全部 geosite 类规则${plain}" >&2
+        echo -e "${yellow}（广告 / 竞品 / 杀软 / tracker 分类将不会生效，请补上 geosite.dat 后重跑本功能）${plain}" >&2
+    else
+        echo -e "${yellow}使用 geosite 数据库: ${geosite_dat}${plain}" >&2
+        for c in category-public-tracker category-pt category-ipfs; do
+            if geosite_has_category "${geosite_dat}" "${c}"; then bt_cats+=("geosite:${c}")
+            else echo -e "${yellow}  跳过不存在的分类: ${c}${plain}" >&2; fi
+        done
+        for c in category-ads-all; do
+            if geosite_has_category "${geosite_dat}" "${c}"; then ads_cats+=("geosite:${c}")
+            else echo -e "${yellow}  跳过不存在的分类: ${c}${plain}" >&2; fi
+        done
+        for c in category-antivirus; do
+            if geosite_has_category "${geosite_dat}" "${c}"; then av_cats+=("geosite:${c}")
+            else echo -e "${yellow}  跳过不存在的分类: ${c}${plain}" >&2; fi
+        done
+        for c in category-vpnservices; do
+            if geosite_has_category "${geosite_dat}" "${c}"; then vpn_cats+=("geosite:${c}")
+            else echo -e "${yellow}  跳过不存在的分类: ${c}${plain}" >&2; fi
+        done
+    fi
+
+    local bt_json ads_json av_json vpn_json
+    bt_json=$(printf '%s\n' "${bt_cats[@]:-}"  | jq -R . | jq -sc 'map(select(length>0))')
+    ads_json=$(printf '%s\n' "${ads_cats[@]:-}" | jq -R . | jq -sc 'map(select(length>0))')
+    av_json=$(printf '%s\n' "${av_cats[@]:-}"  | jq -R . | jq -sc 'map(select(length>0))')
+    vpn_json=$(printf '%s\n' "${vpn_cats[@]:-}" | jq -R . | jq -sc 'map(select(length>0))')
+
+    jq -nc \
+        --argjson bt "${bt_json}" --argjson ads "${ads_json}" \
+        --argjson av "${av_json}" --argjson vpn "${vpn_json}" '
+    [
+      { ruleTag:"block-private", type:"field", outboundTag:"block", ip:["geoip:private"] },
+      { ruleTag:"block-private-cidr", type:"field", outboundTag:"block", ip:[
+          "127.0.0.1/32","10.0.0.0/8","172.16.0.0/12","192.168.0.0/16","169.254.0.0/16",
+          "fc00::/7","fe80::/10","::1/128" ] },
+      { ruleTag:"block-bt-protocol", type:"field", outboundTag:"block", protocol:["bittorrent"] },
+      { ruleTag:"block-bt-tcp-ports", type:"field", outboundTag:"block", network:"tcp", port:"6881-6999,51413" },
+      { ruleTag:"block-smtp", type:"field", outboundTag:"block", port:"25,465,587" },
+      { ruleTag:"block-bt-dht-bootstrap", type:"field", outboundTag:"block", domain:[
+          "full:router.bittorrent.com","full:dht.transmissionbt.com","full:router.utorrent.com",
+          "full:dht.libtorrent.org","full:router.bitcomet.com","full:dht.aelitis.com" ] }
+    ]
+    + (if ($bt | length) > 0 then
+        [{ ruleTag:"block-bt-pt-geosite", type:"field", outboundTag:"block", domain:$bt }] else [] end)
+    + [
+      { ruleTag:"block-bt-tracker-domain", type:"field", outboundTag:"block", domain:[
+          "domain:opentrackr.org","domain:openbittorrent.com","domain:open.demonii.com",
+          "domain:torrent.eu.org","domain:explodie.org","domain:leechers-paradise.org",
+          "domain:internetwarriors.net","domain:tracker.dler.org","domain:thepiratebay.org",
+          "domain:1337x.to","domain:nyaa.si","domain:rutracker.org","domain:torrentz2.eu",
+          "domain:yts.mx","domain:eztv.re","domain:bt4g.com","domain:btdig.com",
+          "domain:torrentgalaxy.to" ] }
+    ]
+    + (if ($ads | length) > 0 then
+        [{ ruleTag:"block-ads", type:"field", outboundTag:"block", domain:$ads }] else [] end)
+    + (if ($av | length) > 0 then
+        [{ ruleTag:"block-antivirus", type:"field", outboundTag:"block", domain:$av }] else [] end)
+    + (if ($vpn | length) > 0 then
+        [{ ruleTag:"block-competitor", type:"field", outboundTag:"block", domain:$vpn }] else [] end)
+    + [
+      { ruleTag:"block-abuse-domain", type:"field", outboundTag:"block", domain:[
+          "domain:xunlei.com","domain:sandai.net","domain:xlpan.com",
+          "domain:qqpcmgr.com","domain:guanjia.qq.com",
+          "domain:rising.com.cn","domain:kingsoft.com","domain:duba.com",
+          "domain:jinshanduba.com","domain:xindubawukong.com",
+          "domain:360.cn","domain:360.com","domain:so.com",
+          "domain:netvigator.com","domain:torproject.org",
+          "domain:miaozhen.com","domain:cnzz.com","domain:talkingdata.cn","domain:umeng.com",
+          "domain:guerrillamail.com","domain:guerrillamailblock.com","domain:sharklasers.com",
+          "domain:pokemail.net","domain:spam4.me","domain:bccto.me","domain:chacuo.net",
+          "domain:laomoe.com","domain:jiyou.cloud","domain:lolicp.com","domain:ksweb.com",
+          "domain:flows.pages.dev","domain:miaoko.pages.dev" ] },
+      { ruleTag:"block-abuse-regexp", type:"field", outboundTag:"block", domain:[
+          "regexp:^(api|ps|sv|offnavi|newvector|ulog\\.imap|newloc)(\\.map)?\\.(baidu|n\\.shifen)\\.com$",
+          "regexp:(^|\\.)[a-z0-9-]*(torrent|ed2k)[a-z0-9-]*(\\.|$)" ] }
+    ]'
+}
+
+# 生成一份完整的 route.json（禁止规则 + final 出站）。菜单 15 用这个。
+write_default_route_json() {
+    local target="${1:-/etc/V2bX/route.json}" blocks
+    blocks=$(build_block_rules) || return 1
+    jq -n --argjson b "${blocks}" '{
+        domainStrategy: "AsIs",
+        rules: ($b + [{ ruleTag:"final", type:"field", outboundTag:"IPv4_out", network:"udp,tcp" }])
+    }' > "${target}"
+}
+
+# ---- hysteria2 侧的唯一权威 ACL ----
+#
+# hysteria 的 ACL 语法只有 outbound(address, proto/port) 三段，
+# Protocol 只有 tcp/udp/both 这三个传输层协议，
+# 从语法层面就写不出「阻断 bittorrent」——写了会在编译期报
+# invalid protocol/port 并让节点起不来。所以只能用
+# 「BT 域名黑名单 + BT 端口 + UDP 端口白名单」逼近。
+# 首条命中即返回，顺序不能调换。
+#
+# 按协议识别 BT 的能力由 V2bX 自己的 core/hy2/rule_enforce.go 提供。
+hy2_acl_block() {
+    cat <<'ACLEOF'
+acl:
+  inline:
+    # ---- 1. 原有的域名分流，保持最高优先级 ----
+    - direct(geosite:google)
+    - reject(geosite:cn)
+    - reject(geoip:cn)
+
+    # ---- 2. BT / PT / DHT 相关域名 ----
+    - reject(suffix:router.bittorrent.com)
+    - reject(suffix:dht.transmissionbt.com)
+    - reject(suffix:router.utorrent.com)
+    - reject(suffix:dht.libtorrent.org)
+    - reject(suffix:router.bitcomet.com)
+    - reject(suffix:opentrackr.org)
+    - reject(suffix:openbittorrent.com)
+    - reject(suffix:demonii.com)
+    - reject(suffix:torrent.eu.org)
+    - reject(suffix:explodie.org)
+    - reject(suffix:leechers-paradise.org)
+    - reject(suffix:internetwarriors.net)
+    - reject(suffix:tracker.dler.org)
+    - reject(suffix:thepiratebay.org)
+    - reject(suffix:1337x.to)
+    - reject(suffix:nyaa.si)
+    - reject(suffix:rutracker.org)
+    - reject(suffix:torrentz2.eu)
+    - reject(suffix:yts.mx)
+    - reject(suffix:eztv.re)
+    - reject(suffix:bt4g.com)
+    - reject(suffix:btdig.com)
+    - reject(suffix:torrentgalaxy.to)
+    - reject(suffix:xunlei.com)
+    - reject(suffix:sandai.net)
+
+    # ---- 3. 常见 BT 端口 ----
+    - reject(all, tcp/6881-6999)
+    - reject(all, tcp/51413)
+    - reject(all, udp/6881-6999)
+    - reject(all, udp/51413)
+
+    # ---- 4. SMTP，防垃圾邮件投诉 ----
+    - reject(all, tcp/25)
+    - reject(all, tcp/465)
+    - reject(all, tcp/587)
+
+    # ---- 5. UDP 端口白名单（真正杀死 DHT 的一条）----
+    # 白名单必须写在总封禁之前，否则会被 reject(all, udp/*) 抢先命中。
+    #   53   DNS         853  DNS over TLS/QUIC
+    #   80   HTTP/3      443  QUIC / HTTP3，绝大多数正常 UDP 在这里
+    #   123  NTP         3478-3479 / 5349  STUN/TURN，WebRTC 语音视频需要
+    - direct(all, udp/53)
+    - direct(all, udp/80)
+    - direct(all, udp/123)
+    - direct(all, udp/443)
+    - direct(all, udp/853)
+    - direct(all, udp/3478-3479)
+    - direct(all, udp/5349)
+    - direct(all, udp/8443)
+    # 其余 UDP 一律拒绝：DHT(KRPC)、uTP、UDP Tracker 都在这里被挡下。
+    # 代价：经代理跑 WireGuard、联机游戏 P2P 直连、部分 WebRTC 媒体流会不可用。
+    - reject(all, udp/*)
+ACLEOF
+}
+
+# 写出一份完整的默认 hy2config.yaml。菜单 15 用这个。
+write_default_hy2config() {
+    local target="${1:-/etc/V2bX/hy2config.yaml}"
+    {
+        cat <<'HYPRE'
+quic:
+  initStreamReceiveWindow: 16777216
+  maxStreamReceiveWindow: 16777216
+  initConnReceiveWindow: 33554432
+  maxConnReceiveWindow: 33554432
+  maxIdleTimeout: 90s
+  maxIncomingStreams: 4096
+  disablePathMTUDiscovery: false
+ignoreClientBandwidth: false
+disableUDP: false
+udpIdleTimeout: 120s
+resolver:
+  type: system
+HYPRE
+        hy2_acl_block
+        cat <<'HYPOST'
+masquerade:
+  type: 404
+HYPOST
+    } > "${target}"
+}
+
+update_route_block_rules_xray() {
+    local route_file
+    route_file=$(jq -r '(.Cores[]? | select(.Type=="xray") | .RouteConfigPath) // empty' /etc/V2bX/config.json 2>/dev/null | head -n1)
+    if [[ -z "${route_file}" ]]; then
+        echo -e "${yellow}config.json 里 xray 内核没有配置 RouteConfigPath，route.json 根本不会被加载${plain}"
+        echo -e "${yellow}请在 config.json 的 xray 内核里加上 \"RouteConfigPath\": \"/etc/V2bX/route.json\"${plain}"
+        route_file="/etc/V2bX/route.json"
+    fi
+    if [[ ! -f "${route_file}" ]]; then
+        echo -e "${red}未找到路由文件 ${route_file}${plain}"
+        return 1
+    fi
+    if ! jq empty "${route_file}" >/dev/null 2>&1; then
+        echo -e "${red}${route_file} 不是合法 JSON，已跳过（请先修复该文件）${plain}"
+        return 1
+    fi
+
+    local new_blocks
+    new_blocks=$(build_block_rules) || {
+        echo -e "${red}生成禁止规则失败${plain}"
+        return 1
+    }
+    local ts backup
+    ts=$(date +%Y%m%d%H%M%S)
+    backup="${route_file}.bak.${ts}"
+    cp "${route_file}" "${backup}"
+    XRAY_ROUTE_BACKUP="${backup}"
+    XRAY_ROUTE_FILE="${route_file}"
+
+    local removed
+    removed=$(jq '[.rules[]? | select(.outboundTag == "block")] | length' "${backup}")
+    echo -e "${yellow}将移除 ${removed} 条原有的 block 规则（已备份到 ${backup}）${plain}"
+
+    if jq --argjson nb "${new_blocks}" \
+        '.rules = ($nb + ((.rules // []) | map(select(.outboundTag != "block"))))' \
+        "${backup}" > "${route_file}.tmp" 2>/dev/null && jq empty "${route_file}.tmp" >/dev/null 2>&1; then
+        mv "${route_file}.tmp" "${route_file}"
+        echo -e "${green}xray 路由规则已更新: ${route_file}${plain}"
+        return 0
+    fi
+    rm -f "${route_file}.tmp"
+    echo -e "${red}生成新规则失败，已保留原文件不变${plain}"
+    return 1
+}
+
+update_route_block_rules_hy2() {
+    # 缺口：hy2 节点如果没有配 Hysteria2ConfigPath，core/hy2/node.go:26 那段
+    # 读配置的分支根本不会执行，serverConfig 保持零值，
+    # 于是 core/hy2/config.go 里 hasACL 为 false —— ACL 引擎压根不建立，
+    # 这个节点对 BT 完全不设防，而且改 /etc/V2bX/hy2config.yaml 对它毫无作用。
+    # 所以先把缺路径的节点补上，再去重写各自的 ACL。
+    local missing
+    missing=$(jq -r '[.Nodes[]? | select(.Core=="hysteria2") | select((.Hysteria2ConfigPath // "") == "") | (.NodeID|tostring)] | join(", ")' /etc/V2bX/config.json 2>/dev/null)
+    if [[ -n "${missing}" ]]; then
+        echo -e "${red}以下 hysteria2 节点没有配置 Hysteria2ConfigPath，当前处于完全无防护状态: ${missing}${plain}"
+        local cbak
+        cbak="/etc/V2bX/config.json.bak.$(date +%Y%m%d%H%M%S)"
+        cp /etc/V2bX/config.json "${cbak}"
+        CONFIG_JSON_BACKUP="${cbak}"
+        if jq '(.Nodes[]? | select(.Core=="hysteria2") | select((.Hysteria2ConfigPath // "") == "") | .Hysteria2ConfigPath) = "/etc/V2bX/hy2config.yaml"' \
+            "${cbak}" > /etc/V2bX/config.json.tmp 2>/dev/null && jq empty /etc/V2bX/config.json.tmp >/dev/null 2>&1; then
+            mv /etc/V2bX/config.json.tmp /etc/V2bX/config.json
+            echo -e "${green}已为这些节点补上 Hysteria2ConfigPath: /etc/V2bX/hy2config.yaml（config.json 已备份到 ${cbak}）${plain}"
+        else
+            rm -f /etc/V2bX/config.json.tmp
+            echo -e "${red}补写 Hysteria2ConfigPath 失败，请手动在 config.json 里给这些节点加上${plain}"
+        fi
+    fi
+
+    # 收集所有 hy2 节点实际引用到的配置文件，逐个重写 ACL
+    local paths hy_file
+    paths=$(jq -r '[.Nodes[]? | select(.Core=="hysteria2") | .Hysteria2ConfigPath // empty] | map(select(length>0)) | unique | .[]' /etc/V2bX/config.json 2>/dev/null)
+    if [[ -z "${paths}" ]]; then
+        echo -e "${yellow}没有 hysteria2 节点，跳过${plain}"
+        return 0
+    fi
+
+    while IFS= read -r hy_file; do
+        [[ -z "${hy_file}" ]] && continue
+        if [[ ! -f "${hy_file}" ]]; then
+            echo -e "${yellow}${hy_file} 不存在，按默认模板创建${plain}"
+            write_default_hy2config "${hy_file}"
+            echo -e "${green}已创建 ${hy_file}${plain}"
+            continue
+        fi
+        local ts backup
+        ts=$(date +%Y%m%d%H%M%S)
+        backup="${hy_file}.bak.${ts}"
+        cp "${hy_file}" "${backup}"
+        HY2_CONF_BACKUPS+=("${backup}|${hy_file}")
+
+        # ACL 文本来自 hy2_acl_block —— 和菜单 15 同一个来源，不会漂移。
+        #
+        # 必须用临时文件传递，不能用管道：下面的 <<'PYACL' 已经占用了
+        # python3 的 stdin（程序本身就是从 stdin 读的），
+        # 管道进来的内容会被直接丢掉，sys.stdin.read() 只会拿到空串，
+        # 结果就是 acl 段被替换成空行、防护全没了。
+        local acl_tmp
+        acl_tmp=$(mktemp)
+        hy2_acl_block > "${acl_tmp}"
+        python3 - "${hy_file}" "${acl_tmp}" <<'PYACL'
+import io, re, sys
+
+path, acl_path = sys.argv[1], sys.argv[2]
+BLOCK = io.open(acl_path, encoding='utf-8').read().rstrip('\n') + '\n'
+if not BLOCK.startswith('acl:'):
+    print('  ACL 文本异常，未改动')
+    raise SystemExit(1)
+src = io.open(path, encoding='utf-8').read()
+
+# 整体替换顶层的 acl: 段（到下一个顶层键为止）。
+# 注意只能用 (?m) 不能带 (?s)：带 DOTALL 的话 [ \t].*\n 里的 .*
+# 会跨行贪婪匹配，把 acl: 之后的 masquerade: 等同级配置一起吞掉。
+pat = re.compile(r'(?m)^acl:\n(?:[ \t].*\n|\n)*?(?=^\S|\Z)')
+m = pat.search(src)
+if m and 'file:' in m.group(0):
+    print('  检测到 acl.file，未改动 —— 请手动把 BT 规则加进该 ACL 文件')
+    raise SystemExit(0)
+if m:
+    out = src[:m.start()] + BLOCK + src[m.end():]
+else:
+    out = src.rstrip('\n') + '\n' + BLOCK
+
+io.open(path, 'w', encoding='utf-8').write(out)
+print('  hysteria2 ACL 已重写')
+PYACL
+        rm -f "${acl_tmp}"
+        echo -e "${green}hysteria2 ACL 已更新: ${hy_file}（备份 ${backup}）${plain}"
+    done <<< "${paths}"
+}
+
+update_route_block_rules_sing() {
+    local orig
+    orig=$(jq -r '(.Cores[]? | select(.Type=="sing") | .OriginalPath) // empty' /etc/V2bX/config.json 2>/dev/null | head -n1)
+    if [[ -z "${orig}" ]]; then
+        echo -e "${yellow}sing-box 内核没有配置 OriginalPath —— 这意味着它当前没有任何路由规则，${plain}"
+        echo -e "${yellow}所有流量（含 BT/DHT）直连出站。这是 V2bX 注入 sing-box 路由规则的唯一入口。${plain}"
+        echo -e "${yellow}请在 config.json 的 sing 内核里加上 \"OriginalPath\": \"/etc/V2bX/sing_origin.json\"，${plain}"
+        echo -e "${yellow}并把仓库 example/anti-bt/sing_origin.json 放到该路径，然后重新执行本功能。${plain}"
+        return 0
+    fi
+    if [[ ! -f "${orig}" ]]; then
+        echo -e "${yellow}OriginalPath 指向的 ${orig} 不存在，跳过 sing-box${plain}"
+        return 0
+    fi
+    echo -e "${yellow}sing-box 使用 ${orig}，请确认其中 route.rules 首条为 {\"action\":\"sniff\",\"sniffer\":[\"bittorrent\",...]}，${plain}"
+    echo -e "${yellow}否则 protocol 规则永远不会命中（sing-box 1.12 起 inbound 级 sniff 已被移除）。${plain}"
+    echo -e "${yellow}可直接使用仓库 example/anti-bt/sing_origin.json 作为模板。${plain}"
+}
+
 update_route_block_rules() {
     if ! ensure_jq; then
         echo -e "${red}jq 安装失败，为避免破坏配置已取消。请手动安装 jq 后重试${plain}"
         before_show_menu
         return
     fi
-
-    # 从 config.json 读取实际的 RouteConfigPath，没有则用默认路径
-    local route_file
-    route_file=$(jq -r '(.Cores[]? | select(.Type=="xray") | .RouteConfigPath) // empty' /etc/V2bX/config.json 2>/dev/null | head -n1)
-    [[ -z "${route_file}" ]] && route_file="/etc/V2bX/route.json"
-
-    if [[ ! -f "${route_file}" ]]; then
-        echo -e "${red}未找到路由文件 ${route_file}${plain}"
-        before_show_menu
-        return
-    fi
-    if ! jq empty "${route_file}" >/dev/null 2>&1; then
-        echo -e "${red}${route_file} 不是合法 JSON，已取消（请先修复该文件）${plain}"
+    if [[ ! -f /etc/V2bX/config.json ]]; then
+        echo -e "${red}未找到 /etc/V2bX/config.json${plain}"
         before_show_menu
         return
     fi
 
-    # 新的禁止规则块（严格禁 BT/PT + 25端口 + 内网 + 广告 + 杀软 + 竞品机场 + 反诈/滥用域名）
-    local new_blocks
-    new_blocks=$(cat <<'JSON'
-[
-  { "ruleTag": "block-bt-proto", "type": "field", "outboundTag": "block", "protocol": ["bittorrent"] },
-  { "ruleTag": "block-bt-pt-tracker", "type": "field", "outboundTag": "block",
-    "domain": ["geosite:category-public-tracker", "geosite:category-pt", "geosite:category-ipfs"] },
-  { "ruleTag": "block-smtp", "type": "field", "outboundTag": "block", "port": 25 },
-  { "ruleTag": "block-private", "type": "field", "outboundTag": "block", "ip": ["geoip:private"] },
-  { "ruleTag": "block-ads", "type": "field", "outboundTag": "block", "domain": ["geosite:category-ads-all"] },
-  { "ruleTag": "block-antivirus", "type": "field", "outboundTag": "block", "domain": ["geosite:category-antivirus"] },
-  { "ruleTag": "block-competitor", "type": "field", "outboundTag": "block", "domain": ["geosite:category-vpnservices"] },
-  { "ruleTag": "block-abuse", "type": "field", "outboundTag": "block",
-    "domain": ["domain:xunlei.com", "domain:sandai.net",
-      "regexp:(.*\\.||)(laomoe|jiyou|ssss|lolicp|vv1234|0z|4321q|868123|ksweb|mm126)\\.(com|cloud|fun|cn|gs|xyz|cc)",
-      "regexp:(flows|miaoko)\\.(pages)\\.(dev)"] }
-]
-JSON
-)
+    XRAY_ROUTE_BACKUP=""
+    XRAY_ROUTE_FILE=""
+    CONFIG_JSON_BACKUP=""
+    HY2_CONF_BACKUPS=()
 
-    local ts backup
-    ts=$(date +%Y%m%d%H%M%S)
-    backup="${route_file}.bak.${ts}"
-    cp "${route_file}" "${backup}"
+    local has_xray has_sing has_hy2
+    has_xray=$(jq -r '[.Cores[]? | select(.Type=="xray")] | length' /etc/V2bX/config.json 2>/dev/null)
+    has_sing=$(jq -r '[.Cores[]? | select(.Type=="sing")] | length' /etc/V2bX/config.json 2>/dev/null)
+    has_hy2=$(jq -r '[.Cores[]? | select(.Type=="hysteria2")] | length' /etc/V2bX/config.json 2>/dev/null)
+    echo -e "${yellow}检测到内核: xray=${has_xray:-0} sing=${has_sing:-0} hysteria2=${has_hy2:-0}${plain}"
 
-    # 合并：新禁止规则置顶 + 删除旧的 outboundTag==block 规则 + 保留其它一切
-    if jq --argjson nb "${new_blocks}" \
-        '.rules = ($nb + ((.rules // []) | map(select(.outboundTag != "block"))))' \
-        "${backup}" > "${route_file}.tmp" 2>/dev/null && jq empty "${route_file}.tmp" >/dev/null 2>&1; then
-        mv "${route_file}.tmp" "${route_file}"
-    else
-        rm -f "${route_file}.tmp"
-        echo -e "${red}生成新规则失败，已保留原文件不变${plain}"
-        before_show_menu
-        return
-    fi
+    [[ "${has_xray:-0}" != "0" ]] && update_route_block_rules_xray
+    [[ "${has_hy2:-0}"  != "0" ]] && update_route_block_rules_hy2
+    [[ "${has_sing:-0}" != "0" ]] && update_route_block_rules_sing
 
-    echo -e "${green}已替换禁止规则，其它分流规则保持不变。${plain}"
-    echo -e "${yellow}备份文件: ${backup}${plain}"
     echo -e "${yellow}正在重启 V2bX 使其生效...${plain}"
     restart 0
-    sleep 1
+    sleep 2
     check_status
     if [[ $? != 0 ]]; then
-        echo -e "${red}V2bX 未能正常启动（可能 geosite.dat 缺少某分类），正在自动回滚...${plain}"
-        cp "${backup}" "${route_file}"
+        echo -e "${red}V2bX 未能正常启动，正在自动回滚...${plain}"
+        [[ -n "${XRAY_ROUTE_BACKUP}" ]] && cp "${XRAY_ROUTE_BACKUP}" "${XRAY_ROUTE_FILE}"
+        [[ -n "${CONFIG_JSON_BACKUP}" ]] && cp "${CONFIG_JSON_BACKUP}" /etc/V2bX/config.json
+        local pair
+        for pair in "${HY2_CONF_BACKUPS[@]:-}"; do
+            [[ -z "${pair}" ]] && continue
+            cp "${pair%%|*}" "${pair##*|}"
+        done
         restart 0
-        echo -e "${yellow}已回滚到修改前的 route.json，请更新 geosite.dat 后重试${plain}"
-    else
-        echo -e "${green}V2bX 运行正常，新禁止规则已生效${plain}"
+        echo -e "${yellow}已回滚。请执行 journalctl -u V2bX -n 100 --no-pager 查看真实原因${plain}"
+        before_show_menu
+        return
+    fi
+    echo -e "${green}V2bX 运行正常，新禁止规则已生效${plain}"
+
+    echo
+    echo -e "${yellow}重要：BT 的 DHT 走的是 bencode/KRPC over UDP，三个内核的嗅探器都不识别，${plain}"
+    echo -e "${yellow}机房投诉里的 \"BitTorrent DHT\" 流量只靠上面的路由规则挡不住。${plain}"
+    read -rp "是否同时安装主机层 nftables 兜底规则（出站 UDP 端口白名单 + KRPC 特征丢包）? [y/N] " ans
+    if [[ "${ans}" =~ ^[Yy]$ ]]; then
+        if [[ -f /etc/V2bX/anti-bt-firewall.sh ]]; then
+            bash /etc/V2bX/anti-bt-firewall.sh install
+        else
+            echo -e "${yellow}未找到 /etc/V2bX/anti-bt-firewall.sh${plain}"
+            echo -e "${yellow}请从仓库 example/anti-bt/anti-bt-firewall.sh 复制过去后执行 install${plain}"
+        fi
     fi
     before_show_menu
 }
+
 
 show_menu() {
     echo -e "

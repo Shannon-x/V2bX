@@ -1,0 +1,117 @@
+{
+    "outbounds": [
+        {
+            "type": "direct",
+            "tag": "direct"
+        }
+    ],
+    "route": {
+        "rules": [
+            {
+                "action": "sniff",
+                "sniffer": [
+                    "bittorrent",
+                    "quic",
+                    "dns",
+                    "http",
+                    "tls"
+                ],
+                "timeout": "300ms"
+            },
+            {
+                "action": "reject",
+                "protocol": "bittorrent"
+            },
+            {
+                "action": "reject",
+                "ip_is_private": true
+            },
+            {
+                "action": "reject",
+                "port": [
+                    25,
+                    465,
+                    587
+                ]
+            },
+            {
+                "action": "reject",
+                "port_range": [
+                    "6881:6999"
+                ]
+            },
+            {
+                "action": "reject",
+                "port": [
+                    51413
+                ]
+            },
+            {
+                "action": "reject",
+                "domain_suffix": [
+                    "router.bittorrent.com",
+                    "dht.transmissionbt.com",
+                    "router.utorrent.com",
+                    "dht.libtorrent.org",
+                    "router.bitcomet.com",
+                    "opentrackr.org",
+                    "openbittorrent.com",
+                    "demonii.com",
+                    "torrent.eu.org",
+                    "explodie.org",
+                    "leechers-paradise.org",
+                    "internetwarriors.net",
+                    "tracker.dler.org",
+                    "thepiratebay.org",
+                    "1337x.to",
+                    "nyaa.si",
+                    "rutracker.org",
+                    "torrentz2.eu",
+                    "yts.mx",
+                    "eztv.re",
+                    "bt4g.com",
+                    "btdig.com",
+                    "torrentgalaxy.to",
+                    "xunlei.com",
+                    "sandai.net"
+                ]
+            },
+            {
+                "action": "reject",
+                "domain_keyword": [
+                    "torrent",
+                    "tracker.",
+                    "announce.",
+                    "magnet"
+                ]
+            },
+            {
+                "type": "logical",
+                "mode": "and",
+                "action": "reject",
+                "rules": [
+                    {
+                        "network": [
+                            "udp"
+                        ]
+                    },
+                    {
+                        "invert": true,
+                        "port": [
+                            53,
+                            80,
+                            123,
+                            443,
+                            853,
+                            3478,
+                            3479,
+                            5349,
+                            8443
+                        ]
+                    }
+                ]
+            }
+        ],
+        "final": "direct"
+    }
+}

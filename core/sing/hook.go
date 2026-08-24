@@ -6,9 +6,11 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/InazumaV/V2bX/common/format"
 	"github.com/InazumaV/V2bX/common/rate"
+	"github.com/InazumaV/V2bX/common/throttle"
 
 	"github.com/InazumaV/V2bX/limiter"
 
@@ -26,6 +28,10 @@ import (
 func safeUserField(s string) string {
 	return strconv.Quote(s)
 }
+
+// btDropLog 给 BT 丢包日志限流：一个跑 DHT 的客户端每秒能产生上百个包，
+// 不限流会瞬间刷爆日志并拖慢数据面。每个 inbound 最多 1 条 / 30 秒。
+var btDropLog = throttle.New(30 * time.Second)
 
 var _ adapter.ConnectionTracker = (*HookServer)(nil)
 
@@ -140,7 +146,12 @@ func (h *HookServer) RoutedPacketConnection(_ context.Context, conn N.PacketConn
 	}
 	if l != nil {
 		destStr := m.Destination.AddrString()
-		protocol := m.Destination.Network()
+		// 这里必须用嗅探结果 m.Protocol，而不是 m.Destination.Network()。
+		// sing 的 M.Socksaddr.Network() 是个常量，恒返回字面量 "socks"
+		// （sing/common/metadata/addr.go:18），所以旧写法等于把每条 UDP 连接的
+		// 协议名都报成 "socks"：面板下发的 protocol 审计规则（典型值 bittorrent）
+		// 在 UDP 路径上永远不可能命中，而 BT 的 DHT/uTP/UDP Tracker 恰恰全在 UDP 上。
+		protocol := m.Protocol
 		if l.CheckDomainRule(destStr) {
 			log.Error(fmt.Sprintf(
 				"User %s access domain %s reject by rule",
@@ -180,6 +191,20 @@ func (h *HookServer) RoutedPacketConnection(_ context.Context, conn N.PacketConn
 				return conn
 			}
 		}
+	}
+	// 逐包 BitTorrent 过滤。sing-box 自带的 bittorrent 嗅探器没有 DHT/KRPC，
+	// 只靠路由规则挡不住机房投诉里的 DHT 流量，详见 bittorrent_filter.go。
+	// 必须在计数器之前包装，否则会被 sing 的 unwrap 机制连同计数器一起剥掉。
+	if l != nil && l.BlockBittorrentUDP() {
+		user := m.User
+		inbound := m.Inbound
+		conn = newBTPacketFilter(conn, func() {
+			if btDropLog.Allow(inbound) {
+				log.Error(fmt.Sprintf(
+					"User %s outbound bittorrent UDP packet dropped by rule",
+					safeUserField(user)))
+			}
+		})
 	}
 	// W2.5 / W6 / audit #23 #57 / B1: Load-first; LoadOrStore alloc only on
 	// cold miss (same as TCP path).

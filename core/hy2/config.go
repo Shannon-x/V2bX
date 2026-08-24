@@ -402,6 +402,10 @@ func (n *Hysteria2node) getHyConfig(info *panel.NodeInfo, config *conf.Options, 
 	if err != nil {
 		return nil, err
 	}
+	// 补上 hy2 缺失的规则执行层：面板下发的域名/IP/端口黑名单在这一层生效，
+	// BT 报文识别放在 RequestHook 的 UDP 首包上。详见 rule_enforce.go。
+	Outbound = newRuleOutbound(n.Tag, Outbound, n.Logger)
+	sniff = newBTRequestHook(n.Tag, sniff, n.Logger)
 	Masq, err := n.getMasqHandler(tls, conn, c)
 	if err != nil {
 		return nil, err

@@ -33,6 +33,17 @@ type Limiter struct {
 	DefaultOutbound string            // default_out: custom default outbound tag
 	SpeedLimit      int
 
+	// blockBTUDPConfig 来自 config.json 的 LimitConfig.BlockBittorrentUDP，
+	// 节点存活期间不变；blockBTUDPRule 由面板下发的 protocol 规则推导，
+	// 每次 UpdateRule 都可能变化，因此用 atomic。两者取或。
+	blockBTUDPConfig bool
+	blockBTUDPRule   atomic.Bool
+
+	// hasBlockRules 是「域名/IP/端口黑名单是否非空」的无锁快照。
+	// 数据面上绝大多数节点一条阻断规则都没有配，让每次连接都去 RLock
+	// 加解析地址纯属浪费，用它做一次原子读就能直接放行。
+	hasBlockRules atomic.Bool
+
 	// User online IP tracking: sync.Map for high concurrency lock-free scale
 	UserOnlineIP *sync.Map // Key: TagUUID, value: *sync.Map {Key: Ip, value: Uid}
 
@@ -110,12 +121,13 @@ func (u *UserLimitInfo) StoreCheckResult(now time.Time, rejected bool) {
 
 func AddLimiter(nodeType string, tag string, l *conf.LimitConfig, users []panel.UserInfo, aliveList map[int]int) *Limiter {
 	info := &Limiter{
-		NodeType:      nodeType,
-		SpeedLimit:    l.SpeedLimit,
-		UserOnlineIP:  new(sync.Map),
-		OldUserOnline: new(sync.Map),
-		UserLimitInfo: new(sync.Map),
-		SpeedLimiter:  new(sync.Map),
+		NodeType:         nodeType,
+		SpeedLimit:       l.SpeedLimit,
+		blockBTUDPConfig: l.BlockBittorrentUDP,
+		UserOnlineIP:     new(sync.Map),
+		OldUserOnline:    new(sync.Map),
+		UserLimitInfo:    new(sync.Map),
+		SpeedLimiter:     new(sync.Map),
 	}
 	info.AliveList.Store(&aliveList)
 	for i := range users {
@@ -129,6 +141,18 @@ func AddLimiter(nodeType string, tag string, l *conf.LimitConfig, users []panel.
 	}
 	limiters.Store(tag, info)
 	return info
+}
+
+// HasBlockRules 报告本节点是否配置了任何域名/IP/端口阻断规则。
+// 用于在热路径上快速跳过规则判定，避免无谓的地址解析。
+func (l *Limiter) HasBlockRules() bool {
+	return l.hasBlockRules.Load()
+}
+
+// BlockBittorrentUDP 报告本节点是否需要对出站 UDP 做逐包 BitTorrent 过滤。
+// 配置开关与面板 protocol 规则任一开启即生效。
+func (l *Limiter) BlockBittorrentUDP() bool {
+	return l.blockBTUDPConfig || l.blockBTUDPRule.Load()
 }
 
 func GetLimiter(tag string) (info *Limiter, err error) {

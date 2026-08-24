@@ -39,7 +39,15 @@ func NewSniffer(ctx context.Context) *Sniffer {
 			{func(c context.Context, b []byte) (SniffResult, error) { return tls.SniffTLS(b) }, false, net.Network_TCP},
 			{func(c context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffBittorrent(b) }, false, net.Network_TCP},
 			{func(c context.Context, b []byte) (SniffResult, error) { return quic.SniffQUIC(b) }, false, net.Network_UDP},
-			{func(c context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffUTP(b) }, false, net.Network_UDP},
+			// V2bX: 用本地实现替换上游 bittorrent.SniffUTP。上游版本时间戳判断恒为真，
+			// 对合法 uTP 包也永不命中；本地版本同时覆盖 DHT(KRPC) 与 UDP Tracker。
+			{func(c context.Context, b []byte) (SniffResult, error) {
+				h, err := SniffBittorrentUDP(b)
+				if err != nil {
+					return nil, err
+				}
+				return h, nil
+			}, false, net.Network_UDP},
 		},
 	}
 	if sniffer, err := newFakeDNSSniffer(ctx); err == nil {

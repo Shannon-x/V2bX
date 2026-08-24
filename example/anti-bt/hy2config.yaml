@@ -1,0 +1,95 @@
+# Hysteria2 反 BT 配置模板
+#
+# 关键事实（源码依据见同目录 README.md）：
+#   hysteria 的 ACL 语法只有 outbound(address, proto/port) 三段，
+#   HostMatcher 只支持 */all、geoip:、geosite:、suffix:、CIDR、裸 IP，
+#   Protocol 只有 tcp/udp/both 这三个「传输层」协议。
+#   也就是说 hy2 从语法层面就写不出「阻断 bittorrent」，
+#   任何 reject(bittorrent) 之类的写法会在编译期报 invalid protocol/port 并让节点起不来。
+#
+#   所以 hy2 只能用「端口白名单 + 域名黑名单」逼近。DHT / uTP / UDP Tracker
+#   全部跑在随机高位 UDP 端口上，UDP 白名单一开，这三类流量整体消失。
+#
+# 语法陷阱（acl/parse.go:8 的正则）：
+#   - address 字段里不能出现逗号
+#   - 逗号后建议只留一个空格，斜杠后绝对不能留空格（单端口分支不做 TrimSpace）
+#   - 行内 # 之后会被当注释截断，域名里不能带 #
+#
+# 匹配顺序：首条命中即返回（acl/compile.go:98-103），顺序不能随意调换。
+
+quic:
+  initStreamReceiveWindow: 16777216
+  maxStreamReceiveWindow: 16777216
+  initConnReceiveWindow: 33554432
+  maxConnReceiveWindow: 33554432
+  maxIdleTimeout: 90s
+  maxIncomingStreams: 4096
+  disablePathMTUDiscovery: false
+ignoreClientBandwidth: false
+disableUDP: false
+udpIdleTimeout: 120s
+resolver:
+  type: system
+acl:
+  inline:
+    # ---- 1. 原有的域名分流，保持最高优先级 ----
+    - direct(geosite:google)
+    - reject(geosite:cn)
+    - reject(geoip:cn)
+
+    # ---- 2. BT / PT / DHT 相关域名 ----
+    - reject(suffix:router.bittorrent.com)
+    - reject(suffix:dht.transmissionbt.com)
+    - reject(suffix:router.utorrent.com)
+    - reject(suffix:dht.libtorrent.org)
+    - reject(suffix:router.bitcomet.com)
+    - reject(suffix:opentrackr.org)
+    - reject(suffix:openbittorrent.com)
+    - reject(suffix:demonii.com)
+    - reject(suffix:torrent.eu.org)
+    - reject(suffix:explodie.org)
+    - reject(suffix:leechers-paradise.org)
+    - reject(suffix:internetwarriors.net)
+    - reject(suffix:tracker.dler.org)
+    - reject(suffix:thepiratebay.org)
+    - reject(suffix:1337x.to)
+    - reject(suffix:nyaa.si)
+    - reject(suffix:rutracker.org)
+    - reject(suffix:torrentz2.eu)
+    - reject(suffix:yts.mx)
+    - reject(suffix:eztv.re)
+    - reject(suffix:bt4g.com)
+    - reject(suffix:btdig.com)
+    - reject(suffix:torrentgalaxy.to)
+    - reject(suffix:xunlei.com)
+    - reject(suffix:sandai.net)
+
+    # ---- 3. 常见 BT 端口 ----
+    - reject(all, tcp/6881-6999)
+    - reject(all, tcp/51413)
+    - reject(all, udp/6881-6999)
+    - reject(all, udp/51413)
+
+    # ---- 4. SMTP，防垃圾邮件投诉 ----
+    - reject(all, tcp/25)
+    - reject(all, tcp/465)
+    - reject(all, tcp/587)
+
+    # ---- 5. UDP 端口白名单（真正杀死 DHT 的一条）----
+    # 白名单必须写在总封禁之前，否则会被 reject(all, udp/*) 抢先命中。
+    #   53   DNS         853  DNS over TLS/QUIC
+    #   80   HTTP/3      443  QUIC / HTTP3，绝大多数正常 UDP 在这里
+    #   123  NTP         3478-3479 / 5349  STUN/TURN，WebRTC 语音视频需要
+    - direct(all, udp/53)
+    - direct(all, udp/80)
+    - direct(all, udp/123)
+    - direct(all, udp/443)
+    - direct(all, udp/853)
+    - direct(all, udp/3478-3479)
+    - direct(all, udp/5349)
+    - direct(all, udp/8443)
+    # 其余 UDP 一律拒绝：DHT(KRPC)、uTP、UDP Tracker 都在这里被挡下。
+    # 代价：经代理跑 WireGuard、联机游戏 P2P 直连、部分 WebRTC 媒体流会不可用。
+    - reject(all, udp/*)
+masquerade:
+  type: 404

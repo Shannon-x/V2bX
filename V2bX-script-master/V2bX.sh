@@ -878,7 +878,9 @@ EOF
     # 生成 route.json。和菜单「更新路由禁止规则」共用 build_block_rules，
     # 两个入口的防护强度完全一致，不会再出现「生成的配置比更新后的弱」。
     if ! write_default_route_json /etc/V2bX/route.json; then
-        echo -e "${red}生成 route.json 失败，请检查 jq 与 geosite.dat${plain}"
+        echo -e "${red}生成 route.json 失败！xray 内核会因为读不到路由文件而无法启动。${plain}"
+        echo -e "${red}请手动安装 jq 后执行 V2bX routerule 重新生成：${plain}"
+        echo -e "${red}  Debian/Ubuntu: apt-get install -y jq   RHEL 系: dnf install -y jq   Alpine: apk add jq${plain}"
     fi
 
 
@@ -1283,9 +1285,203 @@ build_block_rules() {
     ]'
 }
 
+# route.json 的静态兜底。
+#
+# 装不上 jq 的机器（离线、精简镜像、冷门发行版）也必须能拿到防护规则：
+# 生成失败留下一份缺失或过期的 route.json，xray 内核会在
+# RouterConfig.Build() 阶段 panic，整个 V2bX 起不来。
+#
+# 内容与 jq 路径的产出逐字节一致（conf/script_defaults_test.go 会校验），
+# 唯一差别是不做 geosite 分类裁剪 —— 发布包自带的 geosite.dat
+# 四个分类都有，所以对按发布件安装的机器没有影响。
+route_json_static() {
+    cat <<'ROUTEEOF'
+{
+    "domainStrategy": "AsIs",
+    "rules": [
+        {
+            "ruleTag": "block-private",
+            "type": "field",
+            "outboundTag": "block",
+            "ip": [
+                "geoip:private"
+            ]
+        },
+        {
+            "ruleTag": "block-private-cidr",
+            "type": "field",
+            "outboundTag": "block",
+            "ip": [
+                "127.0.0.1/32",
+                "10.0.0.0/8",
+                "172.16.0.0/12",
+                "192.168.0.0/16",
+                "169.254.0.0/16",
+                "fc00::/7",
+                "fe80::/10",
+                "::1/128"
+            ]
+        },
+        {
+            "ruleTag": "block-bt-protocol",
+            "type": "field",
+            "outboundTag": "block",
+            "protocol": [
+                "bittorrent"
+            ]
+        },
+        {
+            "ruleTag": "block-bt-tcp-ports",
+            "type": "field",
+            "outboundTag": "block",
+            "network": "tcp",
+            "port": "6881-6999,51413"
+        },
+        {
+            "ruleTag": "block-smtp",
+            "type": "field",
+            "outboundTag": "block",
+            "port": "25,465,587"
+        },
+        {
+            "ruleTag": "block-bt-dht-bootstrap",
+            "type": "field",
+            "outboundTag": "block",
+            "domain": [
+                "full:router.bittorrent.com",
+                "full:dht.transmissionbt.com",
+                "full:router.utorrent.com",
+                "full:dht.libtorrent.org",
+                "full:router.bitcomet.com",
+                "full:dht.aelitis.com"
+            ]
+        },
+        {
+            "ruleTag": "block-bt-pt-geosite",
+            "type": "field",
+            "outboundTag": "block",
+            "domain": [
+                "geosite:category-public-tracker",
+                "geosite:category-pt",
+                "geosite:category-ipfs"
+            ]
+        },
+        {
+            "ruleTag": "block-bt-tracker-domain",
+            "type": "field",
+            "outboundTag": "block",
+            "domain": [
+                "domain:opentrackr.org",
+                "domain:openbittorrent.com",
+                "domain:open.demonii.com",
+                "domain:torrent.eu.org",
+                "domain:explodie.org",
+                "domain:leechers-paradise.org",
+                "domain:internetwarriors.net",
+                "domain:tracker.dler.org",
+                "domain:thepiratebay.org",
+                "domain:1337x.to",
+                "domain:nyaa.si",
+                "domain:rutracker.org",
+                "domain:torrentz2.eu",
+                "domain:yts.mx",
+                "domain:eztv.re",
+                "domain:bt4g.com",
+                "domain:btdig.com",
+                "domain:torrentgalaxy.to"
+            ]
+        },
+        {
+            "ruleTag": "block-ads",
+            "type": "field",
+            "outboundTag": "block",
+            "domain": [
+                "geosite:category-ads-all"
+            ]
+        },
+        {
+            "ruleTag": "block-antivirus",
+            "type": "field",
+            "outboundTag": "block",
+            "domain": [
+                "geosite:category-antivirus"
+            ]
+        },
+        {
+            "ruleTag": "block-competitor",
+            "type": "field",
+            "outboundTag": "block",
+            "domain": [
+                "geosite:category-vpnservices"
+            ]
+        },
+        {
+            "ruleTag": "block-abuse-domain",
+            "type": "field",
+            "outboundTag": "block",
+            "domain": [
+                "domain:xunlei.com",
+                "domain:sandai.net",
+                "domain:xlpan.com",
+                "domain:qqpcmgr.com",
+                "domain:guanjia.qq.com",
+                "domain:rising.com.cn",
+                "domain:kingsoft.com",
+                "domain:duba.com",
+                "domain:jinshanduba.com",
+                "domain:xindubawukong.com",
+                "domain:360.cn",
+                "domain:360.com",
+                "domain:so.com",
+                "domain:netvigator.com",
+                "domain:torproject.org",
+                "domain:miaozhen.com",
+                "domain:cnzz.com",
+                "domain:talkingdata.cn",
+                "domain:umeng.com",
+                "domain:guerrillamail.com",
+                "domain:guerrillamailblock.com",
+                "domain:sharklasers.com",
+                "domain:pokemail.net",
+                "domain:spam4.me",
+                "domain:bccto.me",
+                "domain:chacuo.net",
+                "domain:laomoe.com",
+                "domain:jiyou.cloud",
+                "domain:lolicp.com",
+                "domain:ksweb.com",
+                "domain:flows.pages.dev",
+                "domain:miaoko.pages.dev"
+            ]
+        },
+        {
+            "ruleTag": "block-abuse-regexp",
+            "type": "field",
+            "outboundTag": "block",
+            "domain": [
+                "regexp:^(api|ps|sv|offnavi|newvector|ulog\\.imap|newloc)(\\.map)?\\.(baidu|n\\.shifen)\\.com$",
+                "regexp:(^|\\.)[a-z0-9-]*(torrent|ed2k)[a-z0-9-]*(\\.|$)"
+            ]
+        },
+        {
+            "ruleTag": "final",
+            "type": "field",
+            "outboundTag": "IPv4_out",
+            "network": "udp,tcp"
+        }
+    ]
+}
+ROUTEEOF
+}
+
 # 生成一份完整的 route.json（禁止规则 + final 出站）。菜单 15 用这个。
 write_default_route_json() {
     local target="${1:-/etc/V2bX/route.json}" blocks
+    if ! command -v jq >/dev/null 2>&1; then
+        echo -e "${yellow}未找到 jq，改用内置静态规则集（跳过 geosite 分类裁剪）${plain}" >&2
+        route_json_static > "${target}"
+        return $?
+    fi
     blocks=$(build_block_rules) || return 1
     jq -n --argjson b "${blocks}" '{
         domainStrategy: "AsIs",

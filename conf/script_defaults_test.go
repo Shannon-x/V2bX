@@ -341,3 +341,98 @@ func aclLines(s string) []string {
 	}
 	return out
 }
+
+// 全新安装时机器上往往没有 jq。这一组测试锁住那次线上故障：
+// initconfig.sh 定义了 ensure_jq 却忘了调用，导致 install.sh 走首装流程时
+// 一路报 "jq: command not found"，route.json 根本没落地；
+// 如果节点用的是 xray 内核，V2bX 会因为读不到路由文件而直接起不来。
+func TestGenerateConfigEnsuresJq(t *testing.T) {
+	for _, script := range scripts {
+		data, err := os.ReadFile(script)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(data)
+		idx := strings.Index(s, "generate_config_file() {")
+		if idx < 0 {
+			t.Fatalf("%s 里找不到 generate_config_file", script)
+		}
+		// 只看函数体开头那一段，避免匹配到别处的 ensure_jq
+		head := s[idx:]
+		if len(head) > 4000 {
+			head = head[:4000]
+		}
+		if !strings.Contains(head, "ensure_jq") {
+			t.Errorf("%s 的 generate_config_file 没有调用 ensure_jq", script)
+		}
+	}
+}
+
+// 装不上 jq 也必须能拿到完整的路由规则。
+func TestRouteJSONFallbackWithoutJq(t *testing.T) {
+	// 在 shell 里用同名函数遮蔽 command 内建，模拟「找不到 jq」
+	const shadow = `command() { if [ "$1" = "-v" ] && [ "$2" = "jq" ]; then return 1; fi; builtin command "$@"; }
+`
+	for _, script := range scripts {
+		out := runShell(t, canonicalSection(t, script),
+			shadow+"write_default_route_json /dev/stdout")
+		var cfg struct {
+			Rules []map[string]any `json:"rules"`
+		}
+		if err := json.Unmarshal(out, &cfg); err != nil {
+			t.Fatalf("%s 无 jq 时产出的不是合法 JSON: %v\n%s", script, err, out)
+		}
+		if len(cfg.Rules) < 10 {
+			t.Errorf("%s 无 jq 时只产出 %d 条规则", script, len(cfg.Rules))
+		}
+		want, err := os.ReadFile("../example/route.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(decodeJSON(t, out), decodeJSON(t, want)) {
+			t.Errorf("%s 的无 jq 兜底与 example/route.json 不一致", script)
+		}
+	}
+}
+
+// 静态兜底与 jq 路径必须逐字节同步，否则两条路径会悄悄分叉。
+func TestStaticFallbackMatchesJqPath(t *testing.T) {
+	if os.Getenv("V2BX_TEST_ASSET") == "" {
+		t.Skip("需要真实发布件的 geosite.dat 才能比对（jq 路径会按分类裁剪），" +
+			"设置 V2BX_TEST_ASSET 后再跑")
+	}
+	section := canonicalSection(t, scripts[0])
+	static := runShell(t, section, "route_json_static")
+	viaJq := runShell(t, section, "write_default_route_json /dev/stdout")
+	if !reflect.DeepEqual(decodeJSON(t, static), decodeJSON(t, viaJq)) {
+		t.Error("静态兜底与 jq 路径的产出已经分叉")
+	}
+}
+
+// install.sh 得把 jq 一并装上，别把兜底当常态。
+func TestInstallScriptInstallsJq(t *testing.T) {
+	data, err := os.ReadFile("../V2bX-script-master/install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	idx := strings.Index(s, "install_base() {")
+	if idx < 0 {
+		t.Fatal("install.sh 里找不到 install_base")
+	}
+	end := strings.Index(s[idx:], "\n}\n")
+	body := s[idx : idx+end]
+	for _, mgr := range []string{"yum install", "apk add", "apt install"} {
+		i := strings.Index(body, mgr)
+		if i < 0 {
+			continue
+		}
+		line := body[i:]
+		if j := strings.Index(line, "\n"); j > 0 {
+			line = line[:j]
+		}
+		if !strings.Contains(line, " jq") {
+			t.Errorf("install_base 的 %q 分支没有安装 jq:\n    %s", mgr, strings.TrimSpace(line))
+		}
+	}
+}

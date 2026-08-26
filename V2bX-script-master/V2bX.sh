@@ -1202,7 +1202,7 @@ resolve_geosite_path() {
 # 所以这里缺什么跳过什么，而不是让整份规则一起炸掉。
 build_block_rules() {
     local geosite_dat c
-    local bt_cats=() ads_cats=() av_cats=() vpn_cats=()
+    local bt_cats=() ads_cats=() av_cats=() vpn_cats=() abuse_cats=()
     geosite_dat=$(resolve_geosite_path)
 
     if [[ ! -f "${geosite_dat}" ]]; then
@@ -1210,7 +1210,11 @@ build_block_rules() {
         echo -e "${yellow}（广告 / 竞品 / 杀软 / tracker 分类将不会生效，请补上 geosite.dat 后重跑本功能）${plain}" >&2
     else
         echo -e "${yellow}使用 geosite 数据库: ${geosite_dat}${plain}" >&2
-        for c in category-public-tracker category-pt category-ipfs; do
+        # 逐站分类比手写单个域名更好：上游维护镜像域名。
+        # 实测 1337x 分类挡 5/5 个镜像，手写 domain:1337x.to 只挡 1/5；
+        # qihoo360 挡 6/6，手写 domain:360.cn 只挡 1/6。
+        for c in category-public-tracker category-pt category-ipfs \
+                 piratebay 1337x nyaa rutracker btdig; do
             if geosite_has_category "${geosite_dat}" "${c}"; then bt_cats+=("geosite:${c}")
             else echo -e "${yellow}  跳过不存在的分类: ${c}${plain}" >&2; fi
         done
@@ -1226,17 +1230,24 @@ build_block_rules() {
             if geosite_has_category "${geosite_dat}" "${c}"; then vpn_cats+=("geosite:${c}")
             else echo -e "${yellow}  跳过不存在的分类: ${c}${plain}" >&2; fi
         done
+        # 迅雷/杀软/统计/Tor 的逐站分类，替代原先手写的一堆域名
+        for c in xunlei qihoo360 kingsoft torproject umeng; do
+            if geosite_has_category "${geosite_dat}" "${c}"; then abuse_cats+=("geosite:${c}")
+            else echo -e "${yellow}  跳过不存在的分类: ${c}${plain}" >&2; fi
+        done
     fi
 
-    local bt_json ads_json av_json vpn_json
+    local bt_json ads_json av_json vpn_json abuse_json
     bt_json=$(printf '%s\n' "${bt_cats[@]:-}"  | jq -R . | jq -sc 'map(select(length>0))')
     ads_json=$(printf '%s\n' "${ads_cats[@]:-}" | jq -R . | jq -sc 'map(select(length>0))')
     av_json=$(printf '%s\n' "${av_cats[@]:-}"  | jq -R . | jq -sc 'map(select(length>0))')
     vpn_json=$(printf '%s\n' "${vpn_cats[@]:-}" | jq -R . | jq -sc 'map(select(length>0))')
+    abuse_json=$(printf '%s\n' "${abuse_cats[@]:-}" | jq -R . | jq -sc 'map(select(length>0))')
 
     jq -nc \
         --argjson bt "${bt_json}" --argjson ads "${ads_json}" \
-        --argjson av "${av_json}" --argjson vpn "${vpn_json}" '
+        --argjson av "${av_json}" --argjson vpn "${vpn_json}" \
+        --argjson abuse "${abuse_json}" '
     [
       { ruleTag:"block-private", type:"field", outboundTag:"block", ip:["geoip:private"] },
       { ruleTag:"block-private-cidr", type:"field", outboundTag:"block", ip:[
@@ -1253,12 +1264,8 @@ build_block_rules() {
         [{ ruleTag:"block-bt-pt-geosite", type:"field", outboundTag:"block", domain:$bt }] else [] end)
     + [
       { ruleTag:"block-bt-tracker-domain", type:"field", outboundTag:"block", domain:[
-          "domain:opentrackr.org","domain:openbittorrent.com","domain:open.demonii.com",
-          "domain:torrent.eu.org","domain:explodie.org","domain:leechers-paradise.org",
-          "domain:internetwarriors.net","domain:tracker.dler.org","domain:thepiratebay.org",
-          "domain:1337x.to","domain:nyaa.si","domain:rutracker.org","domain:torrentz2.eu",
-          "domain:yts.mx","domain:eztv.re","domain:bt4g.com","domain:btdig.com",
-          "domain:torrentgalaxy.to" ] }
+          "domain:leechers-paradise.org","domain:internetwarriors.net","domain:torrentz2.eu",
+          "domain:yts.mx","domain:eztv.re","domain:bt4g.com","domain:torrentgalaxy.to" ] }
     ]
     + (if ($ads | length) > 0 then
         [{ ruleTag:"block-ads", type:"field", outboundTag:"block", domain:$ads }] else [] end)
@@ -1266,15 +1273,13 @@ build_block_rules() {
         [{ ruleTag:"block-antivirus", type:"field", outboundTag:"block", domain:$av }] else [] end)
     + (if ($vpn | length) > 0 then
         [{ ruleTag:"block-competitor", type:"field", outboundTag:"block", domain:$vpn }] else [] end)
+    + (if ($abuse | length) > 0 then
+        [{ ruleTag:"block-abuse-geosite", type:"field", outboundTag:"block", domain:$abuse }] else [] end)
     + [
       { ruleTag:"block-abuse-domain", type:"field", outboundTag:"block", domain:[
-          "domain:xunlei.com","domain:sandai.net","domain:xlpan.com",
-          "domain:qqpcmgr.com","domain:guanjia.qq.com",
-          "domain:rising.com.cn","domain:kingsoft.com","domain:duba.com",
-          "domain:jinshanduba.com","domain:xindubawukong.com",
-          "domain:360.cn","domain:360.com","domain:so.com",
-          "domain:netvigator.com","domain:torproject.org",
-          "domain:miaozhen.com","domain:cnzz.com","domain:talkingdata.cn","domain:umeng.com",
+          "domain:xlpan.com","domain:qqpcmgr.com","domain:guanjia.qq.com",
+          "domain:rising.com.cn","domain:jinshanduba.com","domain:xindubawukong.com",
+          "domain:netvigator.com","domain:talkingdata.cn",
           "domain:guerrillamail.com","domain:guerrillamailblock.com","domain:sharklasers.com",
           "domain:pokemail.net","domain:spam4.me","domain:bccto.me","domain:chacuo.net",
           "domain:laomoe.com","domain:jiyou.cloud","domain:lolicp.com","domain:ksweb.com",
@@ -1363,7 +1368,12 @@ route_json_static() {
             "domain": [
                 "geosite:category-public-tracker",
                 "geosite:category-pt",
-                "geosite:category-ipfs"
+                "geosite:category-ipfs",
+                "geosite:piratebay",
+                "geosite:1337x",
+                "geosite:nyaa",
+                "geosite:rutracker",
+                "geosite:btdig"
             ]
         },
         {
@@ -1371,23 +1381,12 @@ route_json_static() {
             "type": "field",
             "outboundTag": "block",
             "domain": [
-                "domain:opentrackr.org",
-                "domain:openbittorrent.com",
-                "domain:open.demonii.com",
-                "domain:torrent.eu.org",
-                "domain:explodie.org",
                 "domain:leechers-paradise.org",
                 "domain:internetwarriors.net",
-                "domain:tracker.dler.org",
-                "domain:thepiratebay.org",
-                "domain:1337x.to",
-                "domain:nyaa.si",
-                "domain:rutracker.org",
                 "domain:torrentz2.eu",
                 "domain:yts.mx",
                 "domain:eztv.re",
                 "domain:bt4g.com",
-                "domain:btdig.com",
                 "domain:torrentgalaxy.to"
             ]
         },
@@ -1416,29 +1415,30 @@ route_json_static() {
             ]
         },
         {
+            "ruleTag": "block-abuse-geosite",
+            "type": "field",
+            "outboundTag": "block",
+            "domain": [
+                "geosite:xunlei",
+                "geosite:qihoo360",
+                "geosite:kingsoft",
+                "geosite:torproject",
+                "geosite:umeng"
+            ]
+        },
+        {
             "ruleTag": "block-abuse-domain",
             "type": "field",
             "outboundTag": "block",
             "domain": [
-                "domain:xunlei.com",
-                "domain:sandai.net",
                 "domain:xlpan.com",
                 "domain:qqpcmgr.com",
                 "domain:guanjia.qq.com",
                 "domain:rising.com.cn",
-                "domain:kingsoft.com",
-                "domain:duba.com",
                 "domain:jinshanduba.com",
                 "domain:xindubawukong.com",
-                "domain:360.cn",
-                "domain:360.com",
-                "domain:so.com",
                 "domain:netvigator.com",
-                "domain:torproject.org",
-                "domain:miaozhen.com",
-                "domain:cnzz.com",
                 "domain:talkingdata.cn",
-                "domain:umeng.com",
                 "domain:guerrillamail.com",
                 "domain:guerrillamailblock.com",
                 "domain:sharklasers.com",

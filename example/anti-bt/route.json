@@ -65,7 +65,12 @@
             "domain": [
                 "geosite:category-public-tracker",
                 "geosite:category-pt",
-                "geosite:category-ipfs"
+                "geosite:category-ipfs",
+                "geosite:piratebay",
+                "geosite:1337x",
+                "geosite:nyaa",
+                "geosite:rutracker",
+                "geosite:btdig"
             ]
         },
         {
@@ -73,23 +78,12 @@
             "type": "field",
             "outboundTag": "block",
             "domain": [
-                "domain:opentrackr.org",
-                "domain:openbittorrent.com",
-                "domain:open.demonii.com",
-                "domain:torrent.eu.org",
-                "domain:explodie.org",
                 "domain:leechers-paradise.org",
                 "domain:internetwarriors.net",
-                "domain:tracker.dler.org",
-                "domain:thepiratebay.org",
-                "domain:1337x.to",
-                "domain:nyaa.si",
-                "domain:rutracker.org",
                 "domain:torrentz2.eu",
                 "domain:yts.mx",
                 "domain:eztv.re",
                 "domain:bt4g.com",
-                "domain:btdig.com",
                 "domain:torrentgalaxy.to"
             ]
         },
@@ -118,29 +112,30 @@
             ]
         },
         {
+            "ruleTag": "block-abuse-geosite",
+            "type": "field",
+            "outboundTag": "block",
+            "domain": [
+                "geosite:xunlei",
+                "geosite:qihoo360",
+                "geosite:kingsoft",
+                "geosite:torproject",
+                "geosite:umeng"
+            ]
+        },
+        {
             "ruleTag": "block-abuse-domain",
             "type": "field",
             "outboundTag": "block",
             "domain": [
-                "domain:xunlei.com",
-                "domain:sandai.net",
                 "domain:xlpan.com",
                 "domain:qqpcmgr.com",
                 "domain:guanjia.qq.com",
                 "domain:rising.com.cn",
-                "domain:kingsoft.com",
-                "domain:duba.com",
                 "domain:jinshanduba.com",
                 "domain:xindubawukong.com",
-                "domain:360.cn",
-                "domain:360.com",
-                "domain:so.com",
                 "domain:netvigator.com",
-                "domain:torproject.org",
-                "domain:miaozhen.com",
-                "domain:cnzz.com",
                 "domain:talkingdata.cn",
-                "domain:umeng.com",
                 "domain:guerrillamail.com",
                 "domain:guerrillamailblock.com",
                 "domain:sharklasers.com",

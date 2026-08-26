@@ -190,19 +190,68 @@ func routeOf(r *router.Router, host string) string {
 	return route.GetOutboundTag()
 }
 
+// 不依赖 geosite.dat 的那部分：仍然手写在 route.json 里的域名。
 func TestTemplateBlocksAbuseDomains(t *testing.T) {
 	r := buildRouterFromTemplate(t)
 	for _, d := range []string{
-		// BT / PT
-		"router.bittorrent.com", "dht.transmissionbt.com", "opentrackr.org",
-		"tracker.opentrackr.org", "thepiratebay.org", "www.1337x.to", "nyaa.si",
+		// DHT 引导节点 —— geosite 里没有任何分类覆盖，只能手写
+		"router.bittorrent.com", "dht.transmissionbt.com", "router.utorrent.com",
+		"dht.libtorrent.org", "router.bitcomet.com", "dht.aelitis.com",
+		// 同样没有分类覆盖的种子站
+		"leechers-paradise.org", "internetwarriors.net", "torrentz2.eu",
+		"yts.mx", "eztv.re", "bt4g.com", "torrentgalaxy.to",
+		// 杀软 / 临时邮箱 / 竞品，也没有可用的窄分类
+		"qqpcmgr.com", "guanjia.qq.com", "rising.com.cn", "jinshanduba.com",
+		"guerrillamail.com", "sharklasers.com", "chacuo.net",
+		"laomoe.com", "jiyou.cloud", "flows.pages.dev",
+		// 关键词正则
 		"torrentfreak.com", "bittorrent.com", "ed2k.com",
-		// 迅雷 / 杀软 / 统计 / 竞品 / 临时邮箱
-		"xunlei.com", "www.xunlei.com", "sandai.net",
-		"duba.com", "www.duba.com", "guanjia.qq.com", "so.com", "www.360.cn",
-		"umeng.com", "cnzz.com", "guerrillamail.com", "laomoe.com", "flows.pages.dev",
 		// 百度定位上报
 		"api.map.baidu.com", "sv.baidu.com",
+	} {
+		if got := routeOf(r, d); got != "block" {
+			t.Errorf("%-28s 应被拦截，实际走 %s", d, got)
+		}
+	}
+}
+
+// 依赖 geosite.dat 的那部分：改用逐站分类之后，原先手写的域名不能漏，
+// 而且分类还应当额外挡住手写方式挡不住的镜像域名。
+//
+// 用 V2BX_TEST_ASSET 指向真实发布件资源目录才能跑；
+// 仓库自带的 example/geosite.dat 已过期，缺这些分类。
+func TestTemplateBlocksViaGeositeCategories(t *testing.T) {
+	if os.Getenv("V2BX_TEST_ASSET") == "" {
+		t.Skip("需要真实发布件的 geosite.dat，设置 V2BX_TEST_ASSET 后再跑")
+	}
+	data, err := os.ReadFile("../../example/route.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, buildErr := buildRoute(t, data)
+	if buildErr != nil {
+		t.Fatalf("构建失败: %v", buildErr)
+	}
+	built, err := cfg.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := new(router.Router)
+	if err := r.Init(context.Background(), built, nil, nil, nil); err != nil {
+		t.Skipf("Router.Init 需要更多依赖: %v", err)
+	}
+	for _, d := range []string{
+		// 原先手写、现在由 category-public-tracker 覆盖
+		"opentrackr.org", "openbittorrent.com", "open.demonii.com",
+		"torrent.eu.org", "explodie.org", "tracker.dler.org",
+		// 原先手写、现在由逐站分类覆盖
+		"thepiratebay.org", "1337x.to", "nyaa.si", "sukebei.nyaa.si",
+		"rutracker.org", "btdig.com",
+		"xunlei.com", "sandai.net", "360.cn", "360.com", "so.com",
+		"kingsoft.com", "duba.com", "torproject.org", "umeng.com", "cnzz.com",
+		// 分类额外带来的镜像域名 —— 手写单个域名挡不住这些
+		"1337x.st", "x1337x.ws", "x1337x.eu", "rutracker.net", "rutracker.cc",
+		"ijinshan.com", "liebao.cn", "qhimg.com", "360safe.com", "thunderurl.com",
 	} {
 		if got := routeOf(r, d); got != "block" {
 			t.Errorf("%-28s 应被拦截，实际走 %s", d, got)

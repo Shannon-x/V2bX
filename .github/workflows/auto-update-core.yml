@@ -46,6 +46,10 @@ jobs:
 
           # 备份 go.mod 用于回退
           cp go.mod go.mod.bak
+          # 另存一份「本次改动前」的版本号，收尾时用来确认没有发生降级
+          BEFORE_HY_CORE=$(go list -m -f '{{.Version}}' github.com/apernet/hysteria/core/v2)
+          BEFORE_HY_EXTRAS=$(go list -m -f '{{.Version}}' github.com/apernet/hysteria/extras/v2)
+          echo "Before: hysteria core=$BEFORE_HY_CORE extras=$BEFORE_HY_EXTRAS"
 
           if [ -n "$LATEST_HY_CORE" ]; then
             echo "Latest hysteria core: $LATEST_HY_CORE"
@@ -59,20 +63,27 @@ jobs:
           echo "Run go mod tidy to resolve latest pseudo-versions..."
           go mod tidy
 
-          # xray-core 的 hysteria 传输会直接使用 apernet/quic-go 的扩展字段。
-          # xray-core 更新后必须重新读取它自身声明的 quic-go 版本，否则旧 replace
-          # 会覆盖 xray-core 的 require，导致 quic.Config 字段不匹配。
-          XRAY_DIR=$(go list -m -f '{{.Dir}}' github.com/xtls/xray-core)
-          XRAY_QUIC_VER=$(grep 'github.com/apernet/quic-go' "$XRAY_DIR/go.mod" | awk '{print $2}')
-          if [ -n "$XRAY_QUIC_VER" ]; then
-            echo "Align quic-go with updated xray-core: $XRAY_QUIC_VER"
-            go mod edit -replace="github.com/apernet/quic-go=github.com/apernet/quic-go@${XRAY_QUIC_VER}"
-            go get "github.com/apernet/quic-go@${XRAY_QUIC_VER}"
-            go mod tidy
-          else
-            echo "Unable to find xray-core quic-go requirement."
+          # xray-core 和 hysteria 都直接使用 apernet/quic-go 的扩展字段，
+          # 两边要求的版本必须同时满足。
+          #
+          # 旧写法是「无条件对齐到 xray-core 声明的版本」，
+          # 也就是 go get quic-go@<xray 的版本>。当 hysteria 要求更高版本时，
+          # 这一步会把 quic-go 往回降，go get 为了满足约束会连带把 hysteria 降级。
+          # 提交 d0d92aa 就是这么把 hysteria 从 core/2.9.3 + extras/2.12.1
+          # 一路退回 2.9.2/2.9.2 的，而且每跑一次就会再退一次。
+          #
+          # 正确做法是让 MVS 自己算：先把强制 pin 去掉，tidy 之后 Go 会选出
+          # 同时满足所有依赖的版本（即各方要求的最大值），再把 replace 钉到那个结果上。
+          go mod edit -dropreplace=github.com/apernet/quic-go
+          go mod tidy
+          QUIC_VER=$(go list -m -f '{{.Version}}' github.com/apernet/quic-go)
+          if [ -z "$QUIC_VER" ]; then
+            echo "Unable to resolve apernet/quic-go version."
             exit 1
           fi
+          echo "Resolved quic-go (satisfies both xray-core and hysteria): $QUIC_VER"
+          go mod edit -replace="github.com/apernet/quic-go=github.com/apernet/quic-go@${QUIC_VER}"
+          go mod tidy
 
           # 验证更新后的依赖是否能通过编译
           echo "Verifying build with updated cores..."
@@ -94,6 +105,25 @@ jobs:
             rm -f V2bX_test
           fi
           rm -f go.mod.bak
+
+          # 降级守卫。自动更新只应该往前走；一旦发现内核版本倒退，
+          # 直接让任务失败，而不是安安静静地把降级提交上去（d0d92aa 的教训）。
+          # 用 go list -m -versions 的排序位次比较，避免自己实现 semver。
+          ver_rank() {
+            go list -m -versions "$1" 2>/dev/null | tr ' ' '\n' | grep -n "^$2$" | cut -d: -f1
+          }
+          for pair in "github.com/apernet/hysteria/core/v2:$BEFORE_HY_CORE" \
+                      "github.com/apernet/hysteria/extras/v2:$BEFORE_HY_EXTRAS"; do
+            mod="${pair%:*}"; before="${pair##*:}"
+            after=$(go list -m -f '{{.Version}}' "$mod")
+            [ "$after" = "$before" ] && continue
+            rb=$(ver_rank "$mod" "$before"); ra=$(ver_rank "$mod" "$after")
+            if [ -n "$rb" ] && [ -n "$ra" ] && [ "$ra" -lt "$rb" ]; then
+              echo "::error::$mod 从 $before 被降级到 $after，依赖对齐环节有问题，已中止"
+              exit 1
+            fi
+            echo "$mod: $before -> $after"
+          done
 
           # 检查文件是否被修改
           if git diff --quiet go.mod go.sum; then

@@ -100,9 +100,13 @@ func inboundSignature(n *panel.NodeInfo) string {
 func (c *Controller) rebuildInbound(newN *panel.NodeInfo) error {
 	old := c.info.Load()
 	if newN.Security == panel.Tls {
+		// 面板下发的证书配置优先于本地 config.json，
+		// remote 模式下证书内容也走这里带进来。
+		c.applyPanelCert(newN.CertInfo)
 		if err := c.requestCert(); err != nil {
 			return fmt.Errorf("request cert: %w", err)
 		}
+		c.logCertFingerprints(newN.CertInfo)
 	}
 	if err := c.server.DelNode(c.tag); err != nil {
 		return fmt.Errorf("del old node: %w", err)
@@ -198,10 +202,13 @@ func (c *Controller) Start() error {
 	}
 	c.limiter = l
 	if node.Security == panel.Tls {
+		// 同上：面板证书优先，并把指纹打进日志供订阅侧核对。
+		c.applyPanelCert(node.CertInfo)
 		err = c.requestCert()
 		if err != nil {
 			return fmt.Errorf("request cert error: %s", err)
 		}
+		c.logCertFingerprints(node.CertInfo)
 	}
 	// Add new tag
 	err = c.server.AddNode(c.tag, node, c.Options)

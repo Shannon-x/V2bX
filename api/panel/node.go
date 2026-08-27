@@ -33,6 +33,9 @@ type NodeInfo struct {
 	DeviceOnlineMinTraffic int
 	NodeReportMinTraffic   int
 
+	// CertInfo 为面板下发的证书配置；面板未下发时为 nil。
+	CertInfo *CertInfo
+
 	// origin
 	VAllss      *VAllssNode
 	Shadowsocks *ShadowsocksNode
@@ -91,6 +94,41 @@ type TlsSettings struct {
 	PrivateKey  string `json:"private_key"`
 	Mldsa65Seed string `json:"mldsa65Seed"`
 	Xver        uint64 `json:"xver,string"`
+
+	// 证书相关。面板把节点的 cert_config 合并进 tls_settings 下发，
+	// 对齐 v2node 的字段命名（api/v2board/node.go 里的 TlsSettings）。
+	//
+	// 其中 remote 模式是解决「SNI 为伪装域名、真证书无法验证」的关键：
+	// 面板自己生成一张长效自签证书，把 cert/key 下发给节点，
+	// 同时把证书指纹写进订阅（pcs / pinSHA256），
+	// 客户端靠指纹固定来验证，既不用真证书也不用裸奔的 allowInsecure。
+	CertMode         string `json:"cert_mode"`
+	CertFile         string `json:"cert_file"`
+	KeyFile          string `json:"key_file"`
+	TlsCert          string `json:"tls_cert"`
+	TlsKey           string `json:"tls_key"`
+	Provider         string `json:"provider"`
+	Email            string `json:"email"`
+	DNSEnv           string `json:"dns_env"`
+	RejectUnknownSni any    `json:"reject_unknown_sni"`
+	// 面板算好的证书指纹，节点侧只用来在日志里做一致性核对
+	PinnedPeerCertSha256 string `json:"pinned_peer_cert_sha256"`
+}
+
+// CertInfo 是面板下发的证书信息在节点侧的归一化形式。
+// 面板没下发时各字段为空，由本地 config.json 的 CertConfig 兜底。
+type CertInfo struct {
+	CertMode             string
+	CertDomain           string
+	CertFile             string
+	KeyFile              string
+	TlsCert              string
+	TlsKey               string
+	Provider             string
+	Email                string
+	DNSEnv               map[string]string
+	RejectUnknownSni     bool
+	PinnedPeerCertSha256 string
 }
 
 type EncSettings struct {
@@ -408,6 +446,22 @@ func (c *Client) GetNodeInfoCtx(ctx context.Context) (node *NodeInfo, err error)
 		}
 	}
 
+	// 解析面板下发的证书配置。
+	//
+	// 这里独立再解一次 tls_settings，而不是复用各协议结构体里的字段，
+	// 原因是证书配置与协议无关：hysteria2 / shadowsocks 这些协议的
+	// V1 结构体里压根没有 tls_settings 字段，而面板恰恰是把节点的
+	// cert_config 合并进 tls_settings 下发的（对齐 v2node 的做法）。
+	// 独立解一次可以让所有协议、两种 API 版本都拿到证书配置。
+	{
+		var certWrap struct {
+			TlsSettings TlsSettings `json:"tls_settings"`
+		}
+		if uErr := json.Unmarshal(r.Body(), &certWrap); uErr == nil {
+			node.CertInfo = buildCertInfo(&certWrap.TlsSettings, cm)
+		}
+	}
+
 	// parse rules and dns
 	for i := range cm.Routes {
 		// Handle default_out before match parsing, because default_out
@@ -580,4 +634,50 @@ func intervalToTime(i interface{}) time.Duration {
 		seconds = maxIntervalSeconds
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+// buildCertInfo 把面板下发的 tls_settings 归一化成 CertInfo。
+// 面板没配证书（cert_mode 为空或 none）时返回 nil，由本地 config.json 兜底。
+func buildCertInfo(t *TlsSettings, cm *CommonNode) *CertInfo {
+	if t == nil {
+		return nil
+	}
+	mode := strings.ToLower(strings.TrimSpace(t.CertMode))
+	if mode == "" || mode == "none" {
+		return nil
+	}
+	info := &CertInfo{
+		CertMode:             mode,
+		CertFile:             t.CertFile,
+		KeyFile:              t.KeyFile,
+		TlsCert:              t.TlsCert,
+		TlsKey:               t.TlsKey,
+		Provider:             t.Provider,
+		Email:                t.Email,
+		PinnedPeerCertSha256: t.PinnedPeerCertSha256,
+		DNSEnv:               map[string]string{},
+	}
+	// 证书域名优先用 tls_settings.server_name，退回节点的 server_name。
+	info.CertDomain = t.ServerName
+	if info.CertDomain == "" && cm != nil {
+		info.CertDomain = cm.ServerName
+	}
+	// reject_unknown_sni 面板可能发 bool，也可能发 "true"/"1" 这样的字符串。
+	switch v := t.RejectUnknownSni.(type) {
+	case bool:
+		info.RejectUnknownSni = v
+	case string:
+		info.RejectUnknownSni = v == "true" || v == "1"
+	case float64:
+		info.RejectUnknownSni = v != 0
+	}
+	// dns_env 形如 "K1=V1,K2=V2"，与 v2node 的解析方式一致。
+	if t.DNSEnv != "" {
+		for _, env := range strings.Split(t.DNSEnv, ",") {
+			if kv := strings.SplitN(env, "=", 2); len(kv) == 2 {
+				info.DNSEnv[kv[0]] = kv[1]
+			}
+		}
+	}
+	return info
 }

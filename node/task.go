@@ -34,7 +34,7 @@ func (c *Controller) startTasks(node *panel.NodeInfo) {
 	_ = c.userReportPeriodic.Start(false)
 	if node.Security == panel.Tls {
 		switch c.CertConfig.CertMode {
-		case "none", "", "file", "self":
+		case "none", "", "file", "self", "remote":
 		default:
 			c.renewCertPeriodic = &task.Task{
 				Name:     "renewCertTask",

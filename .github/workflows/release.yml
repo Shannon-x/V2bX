@@ -45,8 +45,18 @@ jobs:
             echo "VERSION_TAG=${VERSION_TAG}" >> $GITHUB_OUTPUT
             echo "RELEASE_NAME=${VERSION_TAG} - ${COMMIT_MSG}" >> $GITHUB_OUTPUT
           fi
+      # 只在 push / workflow_dispatch 时建 release。
+      #
+      # 原来的条件是 github.event_name != 'release'，pull_request 也会命中，
+      # 于是每开一个 PR 就凭空多出一个 release —— 而 PR 构建不会上传资产，
+      # 留下的是 0 资产的空壳。空壳按时间会抢占 GitHub 的 "latest"，
+      # 而 install.sh 是靠 releases/latest 取版本的
+      # （V2bX-script-master/install.sh:141），结果就是
+      # V2bX install / V2bX update 对所有人返回 404。
+      #
+      # PR 上仍然跑完整的多平台构建做验证，只是不再建 release。
       - name: Pre-create Release
-        if: github.event_name != 'release'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -220,7 +230,9 @@ jobs:
   finalize:
     needs: [prepare, build]
     runs-on: ubuntu-latest
-    if: github.event_name != 'release'
+    # 同上：pull_request 也会命中 != 'release'，
+    # 结果是每开一个 PR 都把 latest 这个 git tag 强推到 PR 的提交上。
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout codebase
         uses: actions/checkout@v4

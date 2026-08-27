@@ -46,9 +46,19 @@ jobs:
 
           # 备份 go.mod 用于回退
           cp go.mod go.mod.bak
-          # 另存一份「本次改动前」的版本号，收尾时用来确认没有发生降级
-          BEFORE_HY_CORE=$(go list -m -f '{{.Version}}' github.com/apernet/hysteria/core/v2)
-          BEFORE_HY_EXTRAS=$(go list -m -f '{{.Version}}' github.com/apernet/hysteria/extras/v2)
+          # 另存一份「本次改动前」的版本号，收尾时用来确认没有发生降级。
+          #
+          # 这里必须直接从 go.mod 文本里读，不能用 go list -m：
+          # go list -m 默认 -mod=readonly，go.mod 只要需要 tidy 就会报
+          # "updates to go.mod needed" 而失败，而这一步跑在任何 go mod tidy 之前；
+          # 再加上本 step 是 bash -e，一错就整个任务挂掉。
+          # 「改动前的版本」本来就是 go.mod 里写着的那个值，无需模块解析。
+          mod_version() {
+            grep -E "^[[:space:]]*$(echo "$1" | sed 's/\./\\./g')[[:space:]]+v" go.mod \
+              | awk '{print $2}' | head -1
+          }
+          BEFORE_HY_CORE=$(mod_version github.com/apernet/hysteria/core/v2)
+          BEFORE_HY_EXTRAS=$(mod_version github.com/apernet/hysteria/extras/v2)
           echo "Before: hysteria core=$BEFORE_HY_CORE extras=$BEFORE_HY_EXTRAS"
 
           if [ -n "$LATEST_HY_CORE" ]; then
@@ -112,10 +122,13 @@ jobs:
           ver_rank() {
             go list -m -versions "$1" 2>/dev/null | tr ' ' '\n' | grep -n "^$2$" | cut -d: -f1
           }
+          # 守卫只在「确实查到两个版本且确实倒退」时才让任务失败。
+          # 查不到版本号（网络问题、伪版本不在 tag 列表里）只提示，
+          # 不能因为工具链抖动就把一次正常的更新判成失败。
           for pair in "github.com/apernet/hysteria/core/v2:$BEFORE_HY_CORE" \
                       "github.com/apernet/hysteria/extras/v2:$BEFORE_HY_EXTRAS"; do
             mod="${pair%:*}"; before="${pair##*:}"
-            after=$(go list -m -f '{{.Version}}' "$mod")
+            after=$(mod_version "$mod")
             [ "$after" = "$before" ] && continue
             rb=$(ver_rank "$mod" "$before"); ra=$(ver_rank "$mod" "$after")
             if [ -n "$rb" ] && [ -n "$ra" ] && [ "$ra" -lt "$rb" ]; then

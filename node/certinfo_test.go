@@ -228,3 +228,96 @@ func TestRequestCertRemoteRejectsMissingContent(t *testing.T) {
 		t.Error("面板没下发证书内容时应当报错，而不是静默生成一张不匹配的证书")
 	}
 }
+
+// 线上事故回归：本地配的是能用的 http，面板下发管理端默认值 selfSign。
+// 修复前 applyPanelCert 会把 CertMode 覆盖成 selfSign，
+// requestCert 报 "unsupported certmode: selfsign"，节点起不来、systemd 无限重启。
+func TestPanelSelfSignDoesNotBreakWorkingNode(t *testing.T) {
+	local := &conf.CertConfig{
+		CertMode:   "http",
+		CertDomain: "att-b-01.388898.xyz",
+		CertFile:   "/etc/V2bX/att-b-01.388898.xyz.cert.pem",
+		KeyFile:    "/etc/V2bX/att-b-01.388898.xyz.key.pem",
+		Email:      "v2bx@github.com",
+		Provider:   "cloudflare",
+	}
+	c := &Controller{tag: "hysteria2-132", Options: &conf.Options{CertConfig: local}}
+	c.applyPanelCert(&panel.CertInfo{CertMode: "selfSign"})
+
+	// selfSign 归一化后是 self，属于受支持的模式，允许覆盖；
+	// 关键是它绝不能落到 requestCert 的 default 分支。
+	if !supportedCertMode(c.CertConfig.CertMode) {
+		t.Fatalf("覆盖后的 CertMode %q 不被 requestCert 支持，节点会起不来", c.CertConfig.CertMode)
+	}
+}
+
+// 面板发来 V2bX 根本不认识的模式时，必须保留本地配置，而不是把节点弄挂。
+func TestUnsupportedPanelCertModeKeepsLocal(t *testing.T) {
+	for _, bad := range []string{"acme", "letsencrypt", "garbage", "ACME"} {
+		local := &conf.CertConfig{CertMode: "http", CertDomain: "a.example.com", CertFile: "/a.crt", KeyFile: "/a.key"}
+		c := &Controller{tag: "n", Options: &conf.Options{CertConfig: local}}
+		c.applyPanelCert(&panel.CertInfo{CertMode: bad, CertDomain: "evil.example.com"})
+		if local.CertMode != "http" {
+			t.Errorf("面板发 %q 时本地 CertMode 被改成了 %q", bad, local.CertMode)
+		}
+		if local.CertDomain != "a.example.com" {
+			t.Errorf("面板发 %q 时本地 CertDomain 被改成了 %q", bad, local.CertDomain)
+		}
+	}
+}
+
+// remote 模式但面板没带证书内容 —— 等于没配，必须退回本地而不是让节点跑不起来。
+func TestRemoteWithoutCertContentKeepsLocal(t *testing.T) {
+	local := &conf.CertConfig{CertMode: "http", CertDomain: "a.example.com", CertFile: "/a.crt", KeyFile: "/a.key"}
+	c := &Controller{tag: "n", Options: &conf.Options{CertConfig: local}}
+	c.applyPanelCert(&panel.CertInfo{CertMode: "remote", CertDomain: "b.example.com"})
+	if local.CertMode != "http" || local.CertDomain != "a.example.com" {
+		t.Errorf("remote 缺证书内容时应保留本地配置，实际 %+v", local)
+	}
+}
+
+func TestNormalizeCertModeAcceptsPanelSpelling(t *testing.T) {
+	for in, want := range map[string]string{
+		"selfSign": "self", "selfsign": "self", "SelfSign": "self",
+		"self_sign": "self", "self-sign": "self",
+		"self": "self", "http": "http", "dns": "dns",
+		"remote": "remote", "file": "file", "none": "none", "": "",
+		" HTTP ": "http",
+	} {
+		if got := normalizeCertMode(in); got != want {
+			t.Errorf("normalizeCertMode(%q) = %q, 期望 %q", in, got, want)
+		}
+	}
+}
+
+// supportedCertMode 必须与 requestCert 的 switch 分支严格同步。
+// 两处不同步就会重演这次事故：applyPanelCert 放行了一个 requestCert 执行不了的模式。
+func TestSupportedCertModeMatchesRequestCert(t *testing.T) {
+	for _, m := range []string{"", "none", "file", "self", "http", "dns", "remote"} {
+		if !supportedCertMode(m) {
+			t.Errorf("%q 应当被支持（requestCert 里有对应分支）", m)
+		}
+	}
+	for _, m := range []string{"selfsign", "acme", "garbage"} {
+		if supportedCertMode(m) {
+			t.Errorf("%q 不应被当作已支持", m)
+		}
+	}
+}
+
+// 直接验证 requestCert：selfSign 不再落到 default 分支报 unsupported。
+func TestRequestCertAcceptsSelfSignSpelling(t *testing.T) {
+	dir := t.TempDir()
+	c := &Controller{tag: "n", Options: &conf.Options{CertConfig: &conf.CertConfig{
+		CertMode: "selfSign",
+		CertFile: filepath.Join(dir, "n.crt"),
+		KeyFile:  filepath.Join(dir, "n.key"),
+	}}}
+	c.CertConfig.CertDomain = "www.bing.com"
+	if err := c.requestCert(); err != nil {
+		t.Fatalf("selfSign 应当被当作 self 处理，实际报错: %v", err)
+	}
+	if _, err := os.Stat(c.CertConfig.CertFile); err != nil {
+		t.Errorf("自签证书没有生成: %v", err)
+	}
+}

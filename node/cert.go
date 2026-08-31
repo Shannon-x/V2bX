@@ -31,6 +31,12 @@ func (c *Controller) renewCertTask() error {
 }
 
 func (c *Controller) requestCert() error {
+	// 兜底归一化：本地 config.json 也可能被人手写成 selfSign。
+	// 归一化放在这里而不是只放在面板那条路径上，是为了让所有来源都受益。
+	if n := normalizeCertMode(c.CertConfig.CertMode); n != c.CertConfig.CertMode {
+		log.WithField("tag", c.tag).Infof("normalized cert mode %q -> %q", c.CertConfig.CertMode, n)
+		c.CertConfig.CertMode = n
+	}
 	switch c.CertConfig.CertMode {
 	case "none", "":
 	case "file":
@@ -91,7 +97,8 @@ func (c *Controller) requestCert() error {
 		}
 		log.WithField("tag", c.tag).Info("remote cert written from panel")
 	default:
-		return fmt.Errorf("unsupported certmode: %s", c.CertConfig.CertMode)
+		return fmt.Errorf("unsupported certmode: %q (supported: none/file/self/http/dns/remote)",
+			c.CertConfig.CertMode)
 	}
 	return nil
 }

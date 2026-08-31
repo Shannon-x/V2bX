@@ -25,7 +25,32 @@ func (c *Controller) applyPanelCert(info *panel.CertInfo) {
 	if info == nil || c.CertConfig == nil {
 		return
 	}
-	c.CertConfig.CertMode = info.CertMode
+
+	// 面板给的模式必须是本节点真能执行的，否则宁可不动本地配置。
+	//
+	// 教训来自一次线上事故：面板管理端的证书模式默认值是 "selfSign"，
+	// 而 node/cert.go 只认 none/file/self/http/dns/remote，
+	// 于是 requestCert 返回 "unsupported certmode: selfsign"，
+	// 节点起不来、systemd 无限重启 —— 而本地 config.json 里明明配着可用的 http。
+	// 面板的一个默认值就把一台配置正确的机器打死了。
+	//
+	// 现在的原则：面板配置只能"改善"节点，不能让本来能跑的节点跑不起来。
+	mode := normalizeCertMode(info.CertMode)
+	if !supportedCertMode(mode) {
+		log.WithField("tag", c.tag).Warnf(
+			"panel sent unsupported cert mode %q, keeping local cert config (mode=%s)",
+			info.CertMode, c.CertConfig.CertMode)
+		return
+	}
+	// remote 模式没带证书内容等于没配，同样退回本地，不要把节点拖垮。
+	if mode == "remote" && (info.TlsCert == "" || info.TlsKey == "") {
+		log.WithField("tag", c.tag).Warnf(
+			"panel cert mode is remote but tls_cert/tls_key are empty, keeping local cert config (mode=%s)",
+			c.CertConfig.CertMode)
+		return
+	}
+
+	c.CertConfig.CertMode = mode
 	if info.CertDomain != "" {
 		c.CertConfig.CertDomain = info.CertDomain
 	}
@@ -153,4 +178,27 @@ func (c *Controller) logCertFingerprints(info *panel.CertInfo) {
 				"— clients pinning the panel value will fail to connect",
 			info.PinnedPeerCertSha256, fp.CertSha256)
 	}
+}
+
+// normalizeCertMode 把面板可能发来的各种写法归一化成 node/cert.go 认识的值。
+//
+// 面板管理端用的是 "selfSign"（驼峰），V2bX 这边一直叫 "self"；
+// 两边命名不一致本身就是历史遗留，节点侧做兼容比要求所有面板改字段现实。
+func normalizeCertMode(mode string) string {
+	m := strings.ToLower(strings.TrimSpace(mode))
+	switch m {
+	case "selfsign", "self_sign", "self-sign":
+		return "self"
+	}
+	return m
+}
+
+// supportedCertMode 与 node/cert.go 的 requestCert 分支保持一致。
+// 两处若不同步，就会重演「面板给了个执行不了的模式导致节点起不来」那次事故。
+func supportedCertMode(mode string) bool {
+	switch mode {
+	case "", "none", "file", "self", "http", "dns", "remote":
+		return true
+	}
+	return false
 }

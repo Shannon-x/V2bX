@@ -17,13 +17,18 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # 每个架构在自己的原生机器上构建。以前两个都跑在 x86 的 ubuntu-latest 上，
+    # arm64 整个 go build 在 QEMU 里模拟执行，要 30+ 分钟（amd64 只要 3 分钟）。
+    # ubuntu-24.04-arm 对公开仓库免费。
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - linux/amd64
-          - linux/arm64
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Prepare
         run: |
@@ -46,9 +51,6 @@ jobs:
             type=ref,event=pr
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/dev_new' }}
           
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -66,6 +68,9 @@ jobs:
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          # Go 模块和编译缓存按架构分开存，避免两个架构互相覆盖
+          cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
 
       - name: Export digest
         run: |

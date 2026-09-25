@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -89,18 +90,52 @@ func (c *Controller) requestCert() error {
 				return nil
 			}
 		}
-		if err := os.WriteFile(c.CertConfig.CertFile, []byte(c.CertConfig.TlsCert), 0o644); err != nil {
+		// 原子替换：内核可能正在读这个文件（hy2 每次握手都会检查），
+		// 直接覆盖写会让恰好这时进来的握手读到只写了一半的证书。
+		if err := writeFileAtomic(c.CertConfig.CertFile, []byte(c.CertConfig.TlsCert), 0o644); err != nil {
 			return fmt.Errorf("write remote cert error: %s", err)
 		}
-		if err := os.WriteFile(c.CertConfig.KeyFile, []byte(c.CertConfig.TlsKey), 0o600); err != nil {
+		if err := writeFileAtomic(c.CertConfig.KeyFile, []byte(c.CertConfig.TlsKey), 0o600); err != nil {
 			return fmt.Errorf("write remote key error: %s", err)
 		}
-		log.WithField("tag", c.tag).Info("remote cert written from panel")
+		log.WithField("tag", c.tag).Infof("remote cert written from panel: %s", c.CertConfig.CertFile)
 	default:
 		return fmt.Errorf("unsupported certmode: %q (supported: none/file/self/http/dns/remote)",
 			c.CertConfig.CertMode)
 	}
 	return nil
+}
+
+// writeFileAtomic 先写同目录下的临时文件再 rename 覆盖目标，
+// 读方要么看到旧文件、要么看到完整的新文件，不会读到写了一半的内容。
+// 目录不存在时自动创建。
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // rename 成功后临时文件已不存在，这里是失败时的清理
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Chmod(perm); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // fileHasContent 判断文件内容是否与给定字符串一致（忽略首尾空白）。

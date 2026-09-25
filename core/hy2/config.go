@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/InazumaV/V2bX/api/panel"
+	"github.com/InazumaV/V2bX/common/throttle"
 	"github.com/InazumaV/V2bX/conf"
 	"github.com/apernet/hysteria/core/v2/server"
 	"github.com/apernet/hysteria/extras/v2/correctnet"
@@ -63,21 +64,30 @@ func (n *Hysteria2node) getTLSConfig(config *conf.Options) (*server.TLSConfig, e
 	case "none", "":
 		return nil, fmt.Errorf("the CertMode cannot be none")
 	default:
-		var certs []tls.Certificate
-		cert, err := tls.LoadX509KeyPair(config.CertConfig.CertFile, config.CertConfig.KeyFile)
-		if err != nil {
+		// 路径在这里按值取出：config.CertConfig 属于控制器，面板热重建时会被改写。
+		loader := newCertLoader(config.CertConfig.CertFile, config.CertConfig.KeyFile)
+		if err := loader.init(); err != nil {
 			return nil, err
 		}
-		certs = append(certs, cert)
-		return &server.TLSConfig{
-			Certificates: certs,
-			GetCertificate: func(tlsinfo *tls.ClientHelloInfo) (*tls.Certificate, error) {
-				cert, err := tls.LoadX509KeyPair(config.CertConfig.CertFile, config.CertConfig.KeyFile)
-				return &cert, err
-			},
-		}, nil
+		loader.onReload = func(err error) {
+			if n.Logger == nil {
+				return
+			}
+			if err == nil {
+				n.Logger.Info("TLS certificate reloaded from disk", zap.String("file", loader.certFile))
+			} else if certReloadWarn.Allow(n.Tag) {
+				n.Logger.Warn("TLS certificate changed on disk but failed to load, still serving the previous one",
+					zap.String("file", loader.certFile), zap.Error(err))
+			}
+		}
+		// 只给 GetCertificate、不给 Certificates：两个都给时，不带 SNI 的握手会一直
+		// 用启动时加载的那张，证书更新后就对不上了。
+		return &server.TLSConfig{GetCertificate: loader.GetCertificate}, nil
 	}
 }
+
+// certReloadWarn 限制「证书加载失败」告警的频率：文件一直坏着时，每次握手都会重试加载。
+var certReloadWarn = throttle.New(time.Minute)
 
 func (n *Hysteria2node) getQUICConfig(config *serverConfig) (*server.QUICConfig, error) {
 	quic := &server.QUICConfig{}

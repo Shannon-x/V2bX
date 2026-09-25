@@ -14,6 +14,11 @@ type CertConfig struct {
 	// 客户端用指纹固定（xray 的 pinnedPeerCertSha256 / hysteria 的 pinSHA256）
 	// 完成验证，既不需要真证书，也不必裸奔 allowInsecure
 	// —— xray-core 已经移除 allowInsecure，配了会直接报错。
+	//
+	// remote 模式下每个节点的证书都不同，所以证书一定写在本节点专用的文件里
+	// （<CertFile 所在目录>/<节点 tag>.crt/.key）：本地 CertFile/KeyFile 只取目录，
+	// 避免同一台机器上域名相同的节点指向同一个文件、互相覆盖。面板明确下发了
+	// cert_file/key_file 时以面板为准。
 	CertMode         string            `json:"CertMode"`
 	RejectUnknownSni bool              `json:"RejectUnknownSni"`
 	CertDomain       string            `json:"CertDomain"`

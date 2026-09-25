@@ -28,103 +28,104 @@ jobs:
         run: |
           # 启用 GOPROXY
           go env -w GOPROXY=https://goproxy.cn,direct
+          export GOEXPERIMENT=jsonv2
+          TAGS="sing xray hysteria2 with_quic with_grpc with_utls with_wireguard with_acme with_gvisor"
 
-          # 使用 sed 将 replace 指令重新指向 main / dev-next 分支
-          # 这样 go mod tidy 会自动拉取并生成最新的伪版本号 (pseudo-version)
-          sed -i -E 's|replace github.com/xtls/xray-core.*|replace github.com/xtls/xray-core => github.com/wyx2685/xray-core main|' go.mod
-          sed -i -E 's|replace github.com/sagernet/sing-box.*|replace github.com/sagernet/sing-box => github.com/wyx2685/sing-box_mod dev-next|' go.mod
-
-          # 更新 hysteria core 和 extras
-          # 注意：hysteria 和 xray-core 共享 apernet/quic-go，需要版本兼容
-          # 先记录当前 quic-go 版本，后面会在 xray-core 更新后重新对齐
-          echo "Checking for hysteria updates..."
-          XRAY_QUIC_VER=$(grep 'replace github.com/apernet/quic-go' go.mod | awk '{print $NF}')
-          echo "Current quic-go (pinned by xray-core): $XRAY_QUIC_VER"
-
-          LATEST_HY_CORE=$(go list -m -versions github.com/apernet/hysteria/core/v2 2>/dev/null | tr ' ' '\n' | tail -1)
-          LATEST_HY_EXTRAS=$(go list -m -versions github.com/apernet/hysteria/extras/v2 2>/dev/null | tr ' ' '\n' | tail -1)
-
-          # 备份 go.mod 用于回退
-          cp go.mod go.mod.bak
-          # 另存一份「本次改动前」的版本号，收尾时用来确认没有发生降级。
+          # 三个内核逐个升级，每升一个就编译一次，编不过只回滚那一个。
           #
-          # 这里必须直接从 go.mod 文本里读，不能用 go list -m：
-          # go list -m 默认 -mod=readonly，go.mod 只要需要 tidy 就会报
-          # "updates to go.mod needed" 而失败，而这一步跑在任何 go mod tidy 之前；
-          # 再加上本 step 是 bash -e，一错就整个任务挂掉。
-          # 「改动前的版本」本来就是 go.mod 里写着的那个值，无需模块解析。
+          # 旧写法是三个一起升、失败时只会回滚 hysteria。2026-09-24 wyx2685/xray-core
+          # 合并上游时漏改了自家的 TUIC 传输（引用了上游已删除的
+          # MemoryStreamConfig.UdpmaskManager），fork 的 HEAD 本身就编不过；
+          # 回滚完 hysteria 还是编不过，整个任务失败，连带本来没问题的
+          # hysteria 2.12.3 也升不上去。上游哪个坏了就跳过哪个，其余照常。
+
           mod_version() {
+            # 直接读 go.mod 文本。不能用 go list -m：它默认 -mod=readonly，
+            # go.mod 需要 tidy 时会直接报错；在 bash -e 下整个任务就挂了。
             grep -E "^[[:space:]]*$(echo "$1" | sed 's/\./\\./g')[[:space:]]+v" go.mod \
               | awk '{print $2}' | head -1
           }
-          BEFORE_HY_CORE=$(mod_version github.com/apernet/hysteria/core/v2)
-          BEFORE_HY_EXTRAS=$(mod_version github.com/apernet/hysteria/extras/v2)
-          echo "Before: hysteria core=$BEFORE_HY_CORE extras=$BEFORE_HY_EXTRAS"
+          replace_target() {
+            grep -E "^replace $(echo "$1" | sed 's/\./\\./g') " go.mod | awk '{print $NF}'
+          }
+          build_ok() {
+            go build -o /dev/null -tags "$TAGS" . 2>&1 | tail -20
+            return "${PIPESTATUS[0]}"
+          }
 
-          if [ -n "$LATEST_HY_CORE" ]; then
-            echo "Latest hysteria core: $LATEST_HY_CORE"
-            go get "github.com/apernet/hysteria/core/v2@${LATEST_HY_CORE}" || true
-          fi
-          if [ -n "$LATEST_HY_EXTRAS" ]; then
-            echo "Latest hysteria extras: $LATEST_HY_EXTRAS"
-            go get "github.com/apernet/hysteria/extras/v2@${LATEST_HY_EXTRAS}" || true
-          fi
+          # xray-core 和 hysteria 都直接使用 apernet/quic-go 的扩展字段，两边要求的
+          # 版本必须同时满足。不能「无条件对齐到 xray 声明的版本」——hysteria 要求
+          # 更高时 go get 会连带把 hysteria 降级（提交 d0d92aa 就是这么退回 2.9.2 的）。
+          # 让 MVS 自己算：去掉强制 pin，tidy 后取各方要求的最大值，再钉回去。
+          align_quic() {
+            go mod edit -dropreplace=github.com/apernet/quic-go && go mod tidy || return 1
+            local v
+            v=$(go list -m -f '{{.Version}}' github.com/apernet/quic-go) || return 1
+            [ -n "$v" ] || return 1
+            go mod edit -replace="github.com/apernet/quic-go=github.com/apernet/quic-go@${v}" && go mod tidy
+          }
 
-          echo "Run go mod tidy to resolve latest pseudo-versions..."
-          go mod tidy
-
-          # xray-core 和 hysteria 都直接使用 apernet/quic-go 的扩展字段，
-          # 两边要求的版本必须同时满足。
-          #
-          # 旧写法是「无条件对齐到 xray-core 声明的版本」，
-          # 也就是 go get quic-go@<xray 的版本>。当 hysteria 要求更高版本时，
-          # 这一步会把 quic-go 往回降，go get 为了满足约束会连带把 hysteria 降级。
-          # 提交 d0d92aa 就是这么把 hysteria 从 core/2.9.3 + extras/2.12.1
-          # 一路退回 2.9.2/2.9.2 的，而且每跑一次就会再退一次。
-          #
-          # 正确做法是让 MVS 自己算：先把强制 pin 去掉，tidy 之后 Go 会选出
-          # 同时满足所有依赖的版本（即各方要求的最大值），再把 replace 钉到那个结果上。
-          go mod edit -dropreplace=github.com/apernet/quic-go
-          go mod tidy
-          QUIC_VER=$(go list -m -f '{{.Version}}' github.com/apernet/quic-go)
-          if [ -z "$QUIC_VER" ]; then
-            echo "Unable to resolve apernet/quic-go version."
+          # 改动前必须能编过，否则后面的「编不过就回滚」没有意义。
+          echo "::group::Baseline build"
+          if ! build_ok; then
+            echo "::error::dev_new 当前的 go.mod 本身就编译失败，先修主分支再自动更新"
             exit 1
           fi
-          echo "Resolved quic-go (satisfies both xray-core and hysteria): $QUIC_VER"
-          go mod edit -replace="github.com/apernet/quic-go=github.com/apernet/quic-go@${QUIC_VER}"
-          go mod tidy
+          echo "::endgroup::"
 
-          # 验证更新后的依赖是否能通过编译
-          echo "Verifying build with updated cores..."
-          export GOEXPERIMENT=jsonv2
-          if go build -v -o V2bX_test -tags "sing xray hysteria2 with_quic with_grpc with_utls with_wireguard with_acme with_gvisor" 2>&1; then
-            echo "Build succeeded with latest hysteria."
-            rm -f V2bX_test
-          else
-            # 构建失败（通常是 quic-go 版本不兼容），回退 hysteria 到兼容版本
-            echo "Build failed, likely quic-go incompatibility. Rolling back hysteria..."
-            cp go.mod.bak go.mod
-            go mod tidy
-            # 尝试只升级 extras（不依赖 quic-go congestion API）
-            if [ -n "$LATEST_HY_EXTRAS" ]; then
-              go get "github.com/apernet/hysteria/extras/v2@${LATEST_HY_EXTRAS}" || true
-              go mod tidy
+          BEFORE_HY_CORE=$(mod_version github.com/apernet/hysteria/core/v2)
+          BEFORE_HY_EXTRAS=$(mod_version github.com/apernet/hysteria/extras/v2)
+
+          UPDATED=""; SKIPPED=""
+          # try_update <名字> <升级命令>：先快照 go.mod/go.sum，升级 + 对齐 quic-go +
+          # 编译，任何一步失败都恢复快照，并记下被跳过的内核。
+          # 这些函数都在 if 条件里执行，bash -e 在那里不生效，所以函数内部一律用 && 串联。
+          try_update() {
+            local name="$1"; shift
+            echo "::group::Update $name"
+            cp go.mod go.mod.ok; cp go.sum go.sum.ok
+            if "$@" && align_quic && build_ok; then
+              if cmp -s go.mod go.mod.ok; then
+                echo "$name: 已是最新"
+              else
+                echo "$name: 已升级并通过编译"
+                UPDATED="$UPDATED $name"
+              fi
+            else
+              echo "::warning::$name 的最新上游无法与当前代码一起编译，本次跳过（保持原版本）"
+              cp go.mod.ok go.mod; cp go.sum.ok go.sum
+              SKIPPED="$SKIPPED $name"
             fi
-            go build -v -o V2bX_test -tags "sing xray hysteria2 with_quic with_grpc with_utls with_wireguard with_acme with_gvisor"
-            rm -f V2bX_test
-          fi
-          rm -f go.mod.bak
+            rm -f go.mod.ok go.sum.ok
+            echo "::endgroup::"
+          }
 
-          # 降级守卫。自动更新只应该往前走；一旦发现内核版本倒退，
-          # 直接让任务失败，而不是安安静静地把降级提交上去（d0d92aa 的教训）。
-          # 用 go list -m -versions 的排序位次比较，避免自己实现 semver。
+          up_xray() {
+            go mod edit -replace=github.com/xtls/xray-core=github.com/wyx2685/xray-core@main && go mod tidy
+          }
+          up_sing() {
+            go mod edit -replace=github.com/sagernet/sing-box=github.com/wyx2685/sing-box_mod@dev-next && go mod tidy
+          }
+          up_hysteria() {
+            local core extras
+            core=$(go list -m -versions github.com/apernet/hysteria/core/v2 | tr ' ' '\n' | tail -1)
+            extras=$(go list -m -versions github.com/apernet/hysteria/extras/v2 | tr ' ' '\n' | tail -1)
+            [ -n "$core" ] && [ -n "$extras" ] || return 1
+            echo "Latest hysteria: core=$core extras=$extras"
+            go get "github.com/apernet/hysteria/core/v2@${core}" "github.com/apernet/hysteria/extras/v2@${extras}" && go mod tidy
+          }
+
+          # 只有 go.mod 里确实有 replace 的内核才走 fork 分支升级。
+          [ -n "$(replace_target github.com/xtls/xray-core)" ] && try_update xray-core up_xray
+          [ -n "$(replace_target github.com/sagernet/sing-box)" ] && try_update sing-box up_sing
+          try_update hysteria up_hysteria
+
+          # 降级守卫。自动更新只应该往前走；一旦发现内核版本倒退就让任务失败，
+          # 而不是安安静静地把降级提交上去（d0d92aa 的教训）。
           ver_rank() {
             go list -m -versions "$1" 2>/dev/null | tr ' ' '\n' | grep -n "^$2$" | cut -d: -f1
           }
-          # 守卫只在「确实查到两个版本且确实倒退」时才让任务失败。
-          # 查不到版本号（网络问题、伪版本不在 tag 列表里）只提示，
-          # 不能因为工具链抖动就把一次正常的更新判成失败。
+          # 查不到版本号（网络抖动、伪版本不在 tag 列表里）只提示，不判失败。
           for pair in "github.com/apernet/hysteria/core/v2:$BEFORE_HY_CORE" \
                       "github.com/apernet/hysteria/extras/v2:$BEFORE_HY_EXTRAS"; do
             mod="${pair%:*}"; before="${pair##*:}"
@@ -138,15 +139,20 @@ jobs:
             echo "$mod: $before -> $after"
           done
 
-          # 检查文件是否被修改
+          {
+            echo "## 内核自动更新"
+            echo "- 已升级：${UPDATED:- 无}"
+            echo "- 上游编译失败、已跳过：${SKIPPED:- 无}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
           if git diff --quiet go.mod go.sum; then
             echo "No updates available for kernels."
             echo "CHANGED=false" >> $GITHUB_ENV
           else
-            echo "Kernel updates found!"
+            echo "Kernel updates found:$UPDATED"
             echo "CHANGED=true" >> $GITHUB_ENV
-            echo "--- Updated dependencies ---"
-            cat go.mod | grep -E "hysteria|replace"
+            echo "UPDATED_CORES=$(echo $UPDATED | tr ' ' '/')" >> $GITHUB_ENV
+            grep -E "hysteria|replace" go.mod
           fi
 
       - name: Commit and Create Release
@@ -159,7 +165,7 @@ jobs:
 
           # 提交依赖更新
           git add go.mod go.sum
-          git commit -m "build(deps): auto-update core dependencies (xray/sing-box/hysteria)"
+          git commit -m "build(deps): auto-update core dependencies (${UPDATED_CORES})"
 
           # 推送到 dev_new
           git push origin dev_new

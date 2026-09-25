@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/InazumaV/V2bX/api/panel"
+	"github.com/InazumaV/V2bX/conf"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -20,9 +22,21 @@ import (
 // （api/v2board/node.go 里 CertInfo 直接来自面板），也是 remote 模式
 // 能成立的前提 —— 证书由面板生成，节点不该再用本地那套。
 //
-// 面板没下发证书配置时原样返回，完全不影响现有部署。
+// 面板没下发证书配置时用本地配置，完全不影响现有部署。
+//
+// 每次调用都从本地原始配置出发重新合并，结果只取决于「本地配置 + 这一次的
+// 面板配置」，与之前调用过几次、面板改过什么无关。重启后和热重建后的行为
+// 因此一致：面板把 remote 改回别的模式时，本地原来的路径也会跟着回来。
 func (c *Controller) applyPanelCert(info *panel.CertInfo) {
-	if info == nil || c.CertConfig == nil {
+	if c.CertConfig == nil {
+		return
+	}
+	if c.localCert == nil {
+		c.localCert = cloneCertConfig(c.CertConfig)
+	}
+	local := c.localCert
+	*c.CertConfig = *cloneCertConfig(local)
+	if info == nil {
 		return
 	}
 
@@ -67,16 +81,30 @@ func (c *Controller) applyPanelCert(info *panel.CertInfo) {
 	c.CertConfig.TlsCert = info.TlsCert
 	c.CertConfig.TlsKey = info.TlsKey
 
-	// 面板可能不带路径（它只管内容，不管节点上放哪）。
-	// 给个按 tag 区分的默认路径，避免多节点互相覆盖证书。
+	// remote 模式的证书是面板给每个节点单独签的，必须每个节点一个文件。
+	//
+	// 本地 config.json 里的路径不能用：一键脚本按域名给证书起名
+	// （/etc/V2bX/<域名>.cert.pem），同一台机器上域名相同的几个节点会指到
+	// 同一个文件。http/dns 模式下这正是想要的（同一个域名就是同一张 LE 证书），
+	// 但 remote 模式下每个节点的证书不同：后写的节点覆盖先写的，hy2 每次握手
+	// 都从这个文件读证书，结果所有节点都发出最后写入的那张，锁定了其它节点
+	// 指纹的客户端全部握手失败，服务端日志里却什么也看不出来。
+	//
+	// 所以 remote 模式下本地路径只保留目录（那里一定可写，之前就往那写），
+	// 文件名换成按 tag 区分的。面板明确给了路径则照用 —— 那是按节点单独配置的。
+	if mode == "remote" {
+		c.CertConfig.CertFile = perNodeCertPath(local.CertFile, c.tag, ".crt")
+		c.CertConfig.KeyFile = perNodeCertPath(local.KeyFile, c.tag, ".key")
+	}
 	if info.CertFile != "" {
 		c.CertConfig.CertFile = info.CertFile
 	}
 	if info.KeyFile != "" {
 		c.CertConfig.KeyFile = info.KeyFile
 	}
+	// 其它模式下面板和本地都没给路径时，同样按 tag 生成默认路径。
 	if c.CertConfig.CertFile == "" || c.CertConfig.KeyFile == "" {
-		base := filepath.Join("/etc/V2bX/cert", sanitizeTag(c.tag))
+		base := filepath.Join(defaultCertDir, sanitizeTag(c.tag))
 		if c.CertConfig.CertFile == "" {
 			c.CertConfig.CertFile = base + ".crt"
 		}
@@ -85,6 +113,52 @@ func (c *Controller) applyPanelCert(info *panel.CertInfo) {
 		}
 		_ = os.MkdirAll(filepath.Dir(c.CertConfig.CertFile), 0o755)
 	}
+}
+
+// certInfoDigest 把面板证书配置里影响入站的字段摘要成一个短哈希，用于判断是否需要重建。
+//
+// 只放哈希不放原文：签名里不该出现私钥。结果必须对同样的输入完全稳定
+// （DNSEnv 按 key 排序），否则每次轮询签名都不同，节点会被反复重建、反复断连。
+func certInfoDigest(ci *panel.CertInfo) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%t\x00",
+		ci.CertMode, ci.CertFile, ci.KeyFile, ci.CertDomain, ci.Provider, ci.Email, ci.RejectUnknownSni)
+	keys := make([]string, 0, len(ci.DNSEnv))
+	for k := range ci.DNSEnv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(h, "%s=%s\x00", k, ci.DNSEnv[k])
+	}
+	fmt.Fprintf(h, "%s\x00%s", ci.TlsCert, ci.TlsKey)
+	return hex.EncodeToString(h.Sum(nil)[:12])
+}
+
+// defaultCertDir 是本地和面板都没给路径时证书的存放目录。
+const defaultCertDir = "/etc/V2bX/cert"
+
+// perNodeCertPath 返回 remote 模式下本节点专用的证书文件路径：
+// 沿用本地配置里的目录，文件名换成按 tag 区分的；本地没配路径时放到 defaultCertDir。
+// 与本地和面板都没给路径时的默认文件名一致，原来就走默认路径的节点不会换位置。
+func perNodeCertPath(localPath, tag, ext string) string {
+	dir := defaultCertDir
+	if localPath != "" {
+		dir = filepath.Dir(localPath)
+	}
+	return filepath.Join(dir, sanitizeTag(tag)+ext)
+}
+
+// cloneCertConfig 深拷贝证书配置（DNSEnv 是 map，浅拷贝会和原值共享）。
+func cloneCertConfig(src *conf.CertConfig) *conf.CertConfig {
+	dst := *src
+	if src.DNSEnv != nil {
+		dst.DNSEnv = make(map[string]string, len(src.DNSEnv))
+		for k, v := range src.DNSEnv {
+			dst.DNSEnv[k] = v
+		}
+	}
+	return &dst
 }
 
 // sanitizeTag 把 inbound tag 变成可安全用作文件名的形式。

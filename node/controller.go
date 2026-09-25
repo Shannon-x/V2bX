@@ -37,7 +37,11 @@ type Controller struct {
 	// desired (panel) config each cycle to detect, apply and retry a needed
 	// rebuild (H-10). Touched only from Start and the serial nodeInfoMonitor
 	// (Start completes before the periodic tasks run), so no lock is needed.
-	appliedSig                string
+	appliedSig string
+	// localCert 是本地 config.json 里证书配置的原始副本，第一次 applyPanelCert
+	// 时保存。之后每次都从它出发重新合并面板配置，而不是在上一次合并的结果上
+	// 继续改 —— 否则面板一旦把模式/路径改过一次，本地原值就永久丢了。
+	localCert                 *conf.CertConfig
 	nodeInfoMonitorPeriodic   *task.Task
 	userReportPeriodic        *task.Task
 	renewCertPeriodic         *task.Task
@@ -86,6 +90,12 @@ func inboundSignature(n *panel.NodeInfo) string {
 	}
 	if n.Shadowsocks != nil {
 		fmt.Fprintf(&b, "cipher=%s|key=%s|", n.Shadowsocks.Cipher, n.Shadowsocks.ServerKey)
+	}
+	// 面板下发的证书配置也决定入站怎么建。以前没算进来，hy2 这类签名里只有
+	// 端口的节点，面板换了 remote 证书后不会重建、也就不会写入新证书：
+	// 订阅里已经是新指纹，节点却一直发旧证书，直到进程重启。
+	if n.CertInfo != nil {
+		fmt.Fprintf(&b, "cert=%s|", certInfoDigest(n.CertInfo))
 	}
 	return b.String()
 }

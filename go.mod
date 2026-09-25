@@ -3,8 +3,8 @@ module github.com/InazumaV/V2bX
 go 1.26.4
 
 require (
-	github.com/apernet/hysteria/core/v2 v2.12.2
-	github.com/apernet/hysteria/extras/v2 v2.12.2
+	github.com/apernet/hysteria/core/v2 v2.12.3
+	github.com/apernet/hysteria/extras/v2 v2.12.3
 	github.com/beevik/ntp v1.4.4-0.20240716062501-06ef196b89ec
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-acme/lego/v4 v4.25.2
@@ -63,7 +63,7 @@ require (
 	github.com/andybalholm/brotli v1.1.0 // indirect
 	github.com/anthropics/anthropic-sdk-go v1.26.0 // indirect
 	github.com/anytls/sing-anytls v0.0.11 // indirect
-	github.com/apernet/quic-go v0.61.1-0.20260806010916-184d081eef3e // indirect
+	github.com/apernet/quic-go v0.62.1-0.20260912175848-73339f7edbb9 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.36.6 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.29.18 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.71 // indirect
@@ -368,4 +368,4 @@ require (
 
 replace github.com/xtls/xray-core => github.com/wyx2685/xray-core v0.0.0-20260828071630-83ad74c46335
 
-replace github.com/apernet/quic-go => github.com/apernet/quic-go v0.61.1-0.20260806010916-184d081eef3e
+replace github.com/apernet/quic-go => github.com/apernet/quic-go v0.62.1-0.20260912175848-73339f7edbb9

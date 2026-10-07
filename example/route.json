@@ -88,14 +88,6 @@
             ]
         },
         {
-            "ruleTag": "block-ads",
-            "type": "field",
-            "outboundTag": "block",
-            "domain": [
-                "geosite:category-ads-all"
-            ]
-        },
-        {
             "ruleTag": "block-antivirus",
             "type": "field",
             "outboundTag": "block",

@@ -94,6 +94,82 @@ func decodeJSON(t *testing.T, raw []byte) any {
 	return v
 }
 
+// 执行管理脚本中的真实更新函数，只把配置入口重定向到临时目录。
+// 同时验证备份和落盘，避免测试里的 jq 副本与实际升级路径漂移。
+func runMenu19(t *testing.T, original []byte) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	routePath := filepath.Join(dir, "custom route.json")
+	if err := os.WriteFile(routePath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dir, "config.json")
+	config, err := json.Marshal(map[string]any{"Cores": []any{
+		map[string]any{"Type": "xray", "RouteConfigPath": routePath},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, config, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(scripts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	start := strings.Index(s, "update_route_block_rules_xray() {")
+	if start < 0 {
+		t.Fatal("管理脚本中找不到 xray 路由更新函数")
+	}
+	end := strings.Index(s[start:], "\n}\n")
+	if end < 0 {
+		t.Fatal("xray 路由更新函数没有闭合")
+	}
+	update := strings.ReplaceAll(s[start:start+end+3], "/etc/V2bX/config.json",
+		"'"+strings.ReplaceAll(configPath, "'", "'\"'\"'")+"'")
+	backupPath := string(runShell(t, canonicalSection(t, scripts[0])+"\n"+update,
+		"update_route_block_rules_xray >&2 || exit $?\nprintf '%s' \"$XRAY_ROUTE_BACKUP\""))
+	backup, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("读取更新备份失败: %v", err)
+	}
+	if !bytes.Equal(backup, original) {
+		t.Fatal("更新前的配置没有被完整备份")
+	}
+	updated, err := os.ReadFile(routePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(routePath + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("更新后仍有临时文件，或检查失败: %v", err)
+	}
+	return updated
+}
+
+func assertNoAdsBlock(t *testing.T, raw []byte) {
+	t.Helper()
+	var cfg struct {
+		Rules []struct {
+			RuleTag string   `json:"ruleTag"`
+			Domain  []string `json:"domain"`
+		} `json:"rules"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range cfg.Rules {
+		if rule.RuleTag == "block-ads" {
+			t.Error("仍然存在 block-ads 规则")
+		}
+		for _, domain := range rule.Domain {
+			if domain == "geosite:category-ads-all" {
+				t.Error("仍然存在广告分类规则，会误伤 ads.tiktok.com 等业务网站")
+			}
+		}
+	}
+}
+
 // 静态 heredoc 一旦回来，两个入口就又会各写各的，必须挡住。
 func TestNoStaticRouteHeredoc(t *testing.T) {
 	for _, script := range scripts {
@@ -148,14 +224,7 @@ func TestMenu19IsIdempotentOnMenu15Output(t *testing.T) {
 	section := canonicalSection(t, scripts[0])
 	step15 := runShell(t, section, "write_default_route_json /dev/stdout")
 
-	tmp := filepath.Join(t.TempDir(), "route.json")
-	if err := os.WriteFile(tmp, step15, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// 复刻 update_route_block_rules_xray 的合并语义
-	driver := `blocks=$(build_block_rules)
-jq --argjson nb "$blocks" '.rules = ($nb + ((.rules // []) | map(select(.outboundTag != "block"))))' ` + tmp
-	step19 := runShell(t, section, driver)
+	step19 := runMenu19(t, step15)
 
 	if !reflect.DeepEqual(decodeJSON(t, step15), decodeJSON(t, step19)) {
 		t.Error("菜单 19 改动了菜单 15 的产出，说明两个入口的禁止规则不同源")
@@ -168,13 +237,7 @@ func TestMenu19PreservesCustomRules(t *testing.T) {
 	  {"type":"field","outboundTag":"block","ip":["geoip:private"]},
 	  {"type":"field","outboundTag":"warp","domain":["geosite:openai"]},
 	  {"type":"field","outboundTag":"IPv4_out","network":"udp,tcp"}]}`
-	tmp := filepath.Join(t.TempDir(), "legacy.json")
-	if err := os.WriteFile(tmp, []byte(legacy), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	driver := `blocks=$(build_block_rules)
-jq --argjson nb "$blocks" '.rules = ($nb + ((.rules // []) | map(select(.outboundTag != "block"))))' ` + tmp
-	out := runShell(t, canonicalSection(t, scripts[0]), driver)
+	out := runMenu19(t, []byte(legacy))
 
 	var cfg struct {
 		Rules []map[string]any `json:"rules"`
@@ -190,6 +253,56 @@ jq --argjson nb "$blocks" '.rules = ($nb + ((.rules // []) | map(select(.outboun
 	}
 	if !reflect.DeepEqual(kept, []string{"warp", "IPv4_out"}) {
 		t.Errorf("自定义分流规则被丢掉了，实际保留 %v", kept)
+	}
+}
+
+func TestDefaultRoutesDoNotBlockAds(t *testing.T) {
+	for _, file := range []string{"../example/route.json", "../example/anti-bt/route.json"} {
+		t.Run(file, func(t *testing.T) {
+			data, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertNoAdsBlock(t, data)
+		})
+	}
+	for _, script := range scripts {
+		for _, driver := range []string{"write_default_route_json /dev/stdout", "route_json_static"} {
+			t.Run(script+"/"+driver, func(t *testing.T) {
+				assertNoAdsBlock(t, runShell(t, canonicalSection(t, script), driver))
+			})
+		}
+	}
+}
+
+func TestMenu19RemovesLegacyAdsBlock(t *testing.T) {
+	for name, adsRule := range map[string]string{
+		"tagged":   `{"ruleTag":"block-ads","type":"field","outboundTag":"block","domain":["geosite:category-ads-all"]}`,
+		"untagged": `{"type":"field","outboundTag":"block","domain":["geosite:category-ads-all"]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			const custom = `{"ruleTag":"custom-business","type":"field","outboundTag":"warp","domain":["full:business.tiktok.com"]}`
+			const final = `{"ruleTag":"final","type":"field","outboundTag":"IPv4_out","network":"udp,tcp"}`
+			legacy := []byte(`{"domainStrategy":"AsIs","domainMatcher":"linear","rules":[` + adsRule + `,` + custom + `,` + final + `]}`)
+			updated := runMenu19(t, legacy)
+			assertNoAdsBlock(t, updated)
+			cfg := decodeJSON(t, updated).(map[string]any)
+			if cfg["domainStrategy"] != "AsIs" || cfg["domainMatcher"] != "linear" {
+				t.Fatal("更新改动了现有路由全局设置")
+			}
+			var kept []any
+			for _, item := range cfg["rules"].([]any) {
+				if item.(map[string]any)["outboundTag"] != "block" {
+					kept = append(kept, item)
+				}
+			}
+			if !reflect.DeepEqual(kept, []any{decodeJSON(t, []byte(custom)), decodeJSON(t, []byte(final))}) {
+				t.Fatal("更新改动了自定义分流或默认出站")
+			}
+			if again := runMenu19(t, updated); !reflect.DeepEqual(cfg, decodeJSON(t, again)) {
+				t.Fatal("重复更新改变配置或重新引入了广告拦截")
+			}
+		})
 	}
 }
 

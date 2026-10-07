@@ -3,6 +3,7 @@ package hy2
 import (
 	"errors"
 	"net"
+	"reflect"
 	"testing"
 
 	"github.com/InazumaV/V2bX/api/panel"
@@ -132,11 +133,11 @@ func TestBTRequestHookRejectsDHT(t *testing.T) {
 	}
 
 	addr := "1.2.3.4:6881"
-	if err := h.UDP(dhtQuery, &addr); !errors.Is(err, errBittorrent) {
+	if _, err := h.UDP([][]byte{dhtQuery}, &addr); !errors.Is(err, errBittorrent) {
 		t.Fatalf("DHT 首包应被拒绝，实际 err=%v", err)
 	}
 	dns := []byte{0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-	if err := h.UDP(dns, &addr); err != nil {
+	if done, err := h.UDP([][]byte{dns}, &addr); err != nil || !done {
 		t.Fatalf("普通 UDP 首包不应被拒绝，实际 err=%v", err)
 	}
 }
@@ -150,7 +151,7 @@ func TestBTRequestHookDisabledByDefault(t *testing.T) {
 		t.Fatal("未开启时不应接管 UDP 请求，否则等于悄悄改变默认行为")
 	}
 	addr := "1.2.3.4:6881"
-	if err := h.UDP(dhtQuery, &addr); err != nil {
+	if done, err := h.UDP([][]byte{dhtQuery}, &addr); err != nil || !done {
 		t.Fatalf("未开启时不应拦截，实际 err=%v", err)
 	}
 }
@@ -165,28 +166,39 @@ func TestBTRequestHookEnabledByPanelProtocolRule(t *testing.T) {
 		t.Fatal("面板 protocol 规则含 bittorrent 时应自动开启")
 	}
 	addr := "1.2.3.4:6881"
-	if err := h.UDP(dhtQuery, &addr); !errors.Is(err, errBittorrent) {
+	if _, err := h.UDP([][]byte{dhtQuery}, &addr); !errors.Is(err, errBittorrent) {
 		t.Fatalf("应拦截，实际 err=%v", err)
 	}
 }
 
 type stubHook struct {
-	checked  bool
-	udpCalls int
+	checked    bool
+	udpCalls   int
+	udpDone    bool
+	udpErr     error
+	udpPackets [][]byte
+	rewrite    string
 }
 
 func (s *stubHook) Check(isUDP bool, reqAddr string) bool { return s.checked }
 func (s *stubHook) TCP(server.HyStream, *string) ([]byte, error) {
 	return []byte("putback"), nil
 }
-func (s *stubHook) UDP([]byte, *string) error { s.udpCalls++; return nil }
+func (s *stubHook) UDP(packets [][]byte, addr *string) (bool, error) {
+	s.udpCalls++
+	s.udpPackets = packets
+	if s.rewrite != "" {
+		*addr = s.rewrite
+	}
+	return s.udpDone, s.udpErr
+}
 
 // 原有的 sniff hook 行为必须保持不变。
 func TestBTRequestHookPreservesInnerHook(t *testing.T) {
 	const tag = "hy2-bt-inner"
 	newTestLimiter(t, tag, nil, &conf.LimitConfig{BlockBittorrentUDP: true})
 
-	inner := &stubHook{checked: true}
+	inner := &stubHook{checked: true, udpDone: true}
 	h := newBTRequestHook(tag, inner, nil)
 
 	if !h.Check(false, "x:443") {
@@ -197,7 +209,7 @@ func TestBTRequestHookPreservesInnerHook(t *testing.T) {
 	}
 	addr := "1.2.3.4:443"
 	dns := []byte{0x12, 0x34, 0x01, 0x00}
-	if err := h.UDP(dns, &addr); err != nil {
+	if _, err := h.UDP([][]byte{dns}, &addr); err != nil {
 		t.Fatalf("非 BT 流量应转交内层 hook，实际 err=%v", err)
 	}
 	if inner.udpCalls != 1 {
@@ -205,7 +217,7 @@ func TestBTRequestHookPreservesInnerHook(t *testing.T) {
 	}
 
 	// BT 流量在转交之前就被拒掉，内层 hook 不应再被调用
-	if err := h.UDP(dhtQuery, &addr); !errors.Is(err, errBittorrent) {
+	if _, err := h.UDP([][]byte{dhtQuery}, &addr); !errors.Is(err, errBittorrent) {
 		t.Fatalf("BT 首包应被拒绝，实际 err=%v", err)
 	}
 	if inner.udpCalls != 1 {
@@ -221,10 +233,54 @@ func TestBTRequestHookDoesNotForceInnerHook(t *testing.T) {
 	inner := &stubHook{checked: false}
 	h := newBTRequestHook(tag, inner, nil)
 	addr := "1.2.3.4:443"
-	if err := h.UDP([]byte{0x12, 0x34}, &addr); err != nil {
+	if done, err := h.UDP([][]byte{{0x12, 0x34}}, &addr); err != nil || !done {
 		t.Fatalf("不应报错，实际 err=%v", err)
 	}
 	if inner.udpCalls != 0 {
 		t.Fatalf("内层 hook 不想接管时不应被调用，实际 %d 次", inner.udpCalls)
+	}
+}
+
+func TestBTRequestHookPreservesMultiPacketSniffing(t *testing.T) {
+	const tag = "hy2-bt-multipacket"
+	newTestLimiter(t, tag, nil, &conf.LimitConfig{BlockBittorrentUDP: true})
+	inner := &stubHook{checked: true}
+	h := newBTRequestHook(tag, inner, nil)
+	addr := "1.2.3.4:443"
+	packets := [][]byte{[]byte("first fragment")}
+	if done, err := h.UDP(packets, &addr); done || err != nil {
+		t.Fatalf("内层嗅探未完成时必须继续等待，done=%v err=%v", done, err)
+	}
+	packets = append(packets, []byte("second fragment"))
+	inner.udpDone = true
+	inner.rewrite = "ads.tiktok.com:443"
+	if done, err := h.UDP(packets, &addr); !done || err != nil {
+		t.Fatalf("内层嗅探完成后必须放行缓存报文，done=%v err=%v", done, err)
+	}
+	if !reflect.DeepEqual(inner.udpPackets, packets) || inner.udpCalls != 2 || addr != inner.rewrite {
+		t.Fatalf("多包嗅探或目标重写未透传: packets=%q calls=%d addr=%s", inner.udpPackets, inner.udpCalls, addr)
+	}
+	inner.udpErr = errors.New("sniff failed")
+	if _, err := h.UDP(packets, &addr); !errors.Is(err, inner.udpErr) {
+		t.Fatalf("内层嗅探错误未透传: %v", err)
+	}
+}
+
+func TestBTRequestHookRejectsDHTInBufferedPackets(t *testing.T) {
+	const tag = "hy2-bt-buffered-dht"
+	newTestLimiter(t, tag, nil, &conf.LimitConfig{BlockBittorrentUDP: true})
+	inner := &stubHook{checked: true}
+	h := newBTRequestHook(tag, inner, nil)
+	addr := "1.2.3.4:443"
+	packets := [][]byte{[]byte("first fragment")}
+	if done, err := h.UDP(packets, &addr); done || err != nil {
+		t.Fatalf("首包应进入内层嗅探等待后续报文: done=%v err=%v", done, err)
+	}
+	packets = append(packets, dhtQuery)
+	if _, err := h.UDP(packets, &addr); !errors.Is(err, errBittorrent) {
+		t.Fatalf("缓存中后续的 DHT 报文也应被拦截: %v", err)
+	}
+	if inner.udpCalls != 1 {
+		t.Fatal("含 DHT 的缓存报文不应继续交给内层嗅探")
 	}
 }

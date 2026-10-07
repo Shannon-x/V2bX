@@ -560,6 +560,8 @@ export SING_DNS_PATH=/etc/V2bX/sing_dns.json
 
 ## 手动编译
 
+需要 Go 1.27.1 或更新版本，构建环境与 `go.mod` 保持一致。
+
 ```bash
 git clone https://github.com/Shannon-x/V2bX.git
 cd V2bX && git checkout dev_new

@@ -19,9 +19,7 @@ func TestAntiBTSingTemplateParses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := box.Context(context.Background(),
-		include.InboundRegistry(), include.OutboundRegistry(), include.EndpointRegistry(),
-		include.DNSTransportRegistry(), include.ServiceRegistry())
+	ctx := include.Context(context.Background())
 
 	opts, err := json.UnmarshalExtendedContext[option.Options](ctx, data)
 	if err != nil {

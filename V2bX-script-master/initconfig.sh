@@ -73,12 +73,12 @@ resolve_geosite_path() {
 # 所以这里缺什么跳过什么，而不是让整份规则一起炸掉。
 build_block_rules() {
     local geosite_dat c
-    local bt_cats=() ads_cats=() av_cats=() vpn_cats=() abuse_cats=()
+    local bt_cats=() av_cats=() vpn_cats=() abuse_cats=()
     geosite_dat=$(resolve_geosite_path)
 
     if [[ ! -f "${geosite_dat}" ]]; then
         echo -e "${yellow}未找到 ${geosite_dat}，本次跳过全部 geosite 类规则${plain}" >&2
-        echo -e "${yellow}（广告 / 竞品 / 杀软 / tracker 分类将不会生效，请补上 geosite.dat 后重跑本功能）${plain}" >&2
+        echo -e "${yellow}（竞品 / 杀软 / tracker 分类将不会生效，请补上 geosite.dat 后重跑本功能）${plain}" >&2
     else
         echo -e "${yellow}使用 geosite 数据库: ${geosite_dat}${plain}" >&2
         # 逐站分类比手写单个域名更好：上游维护镜像域名。
@@ -87,10 +87,6 @@ build_block_rules() {
         for c in category-public-tracker category-pt category-ipfs \
                  piratebay 1337x nyaa rutracker btdig; do
             if geosite_has_category "${geosite_dat}" "${c}"; then bt_cats+=("geosite:${c}")
-            else echo -e "${yellow}  跳过不存在的分类: ${c}${plain}" >&2; fi
-        done
-        for c in category-ads-all; do
-            if geosite_has_category "${geosite_dat}" "${c}"; then ads_cats+=("geosite:${c}")
             else echo -e "${yellow}  跳过不存在的分类: ${c}${plain}" >&2; fi
         done
         for c in category-antivirus; do
@@ -108,15 +104,15 @@ build_block_rules() {
         done
     fi
 
-    local bt_json ads_json av_json vpn_json abuse_json
+    # 不在服务端封禁广告分类，避免误伤 ads.tiktok.com 等正常业务网站。
+    local bt_json av_json vpn_json abuse_json
     bt_json=$(printf '%s\n' "${bt_cats[@]:-}"  | jq -R . | jq -sc 'map(select(length>0))')
-    ads_json=$(printf '%s\n' "${ads_cats[@]:-}" | jq -R . | jq -sc 'map(select(length>0))')
     av_json=$(printf '%s\n' "${av_cats[@]:-}"  | jq -R . | jq -sc 'map(select(length>0))')
     vpn_json=$(printf '%s\n' "${vpn_cats[@]:-}" | jq -R . | jq -sc 'map(select(length>0))')
     abuse_json=$(printf '%s\n' "${abuse_cats[@]:-}" | jq -R . | jq -sc 'map(select(length>0))')
 
     jq -nc \
-        --argjson bt "${bt_json}" --argjson ads "${ads_json}" \
+        --argjson bt "${bt_json}" \
         --argjson av "${av_json}" --argjson vpn "${vpn_json}" \
         --argjson abuse "${abuse_json}" '
     [
@@ -138,8 +134,6 @@ build_block_rules() {
           "domain:leechers-paradise.org","domain:internetwarriors.net","domain:torrentz2.eu",
           "domain:yts.mx","domain:eztv.re","domain:bt4g.com","domain:torrentgalaxy.to" ] }
     ]
-    + (if ($ads | length) > 0 then
-        [{ ruleTag:"block-ads", type:"field", outboundTag:"block", domain:$ads }] else [] end)
     + (if ($av | length) > 0 then
         [{ ruleTag:"block-antivirus", type:"field", outboundTag:"block", domain:$av }] else [] end)
     + (if ($vpn | length) > 0 then
@@ -259,14 +253,6 @@ route_json_static() {
                 "domain:eztv.re",
                 "domain:bt4g.com",
                 "domain:torrentgalaxy.to"
-            ]
-        },
-        {
-            "ruleTag": "block-ads",
-            "type": "field",
-            "outboundTag": "block",
-            "domain": [
-                "geosite:category-ads-all"
             ]
         },
         {

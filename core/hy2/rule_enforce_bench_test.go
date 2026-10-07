@@ -59,7 +59,7 @@ func BenchmarkRuleOutboundCheckUDP(b *testing.B) {
 	})
 }
 
-// UDP 首包的 BT 判定开销。只在每个 UDP 会话的第一个包上跑一次。
+// UDP 首批报文的 BT 判定开销；此处测量单包场景。
 func BenchmarkBTRequestHookUDP(b *testing.B) {
 	dns := []byte{0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 
@@ -70,7 +70,7 @@ func BenchmarkBTRequestHookUDP(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_ = h.UDP(dns, &addr)
+			_, _ = h.UDP([][]byte{dns}, &addr)
 		}
 	})
 
@@ -81,7 +81,7 @@ func BenchmarkBTRequestHookUDP(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_ = h.UDP(dns, &addr)
+			_, _ = h.UDP([][]byte{dns}, &addr)
 		}
 	})
 }

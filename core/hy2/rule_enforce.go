@@ -25,9 +25,9 @@ import (
 //	                        而 UDP 侧的 CheckUDP() 是**逐包**调用的
 //	                        （server/udp.go:129 checkAddr，带每会话 256 条地址缓存），
 //	                        所以能按目的地址做到接近逐包的拦截粒度。
-//	server.RequestHook   —— UDP(data, reqAddr) 能拿到**首包的原始载荷**，
+//	server.RequestHook   —— UDP(packets, reqAddr) 能拿到嗅探期间缓存的首批载荷，
 //	                        是 hy2 上唯一能按报文特征识别 BT 的位置。
-//	                        受 hysteria 架构限制只能看首包（见 core/v2/server/config.go 注释）。
+//	                        嗅探完成后不再调用，不能替代会话全程的逐包过滤。
 
 var (
 	errBlockedByRule = errors.New("blocked by V2bX rule")
@@ -117,7 +117,7 @@ func (o *ruleOutbound) CheckUDP(reqAddr string) error {
 	return o.next.CheckUDP(reqAddr)
 }
 
-// btRequestHook 在 UDP 会话首包上做 BitTorrent 报文识别。
+// btRequestHook 在 UDP 会话交给嗅探器的首批报文上做 BitTorrent 识别。
 // inner 是原有的 sniff hook（hy2config.yaml 里 sniff.enable 打开时才有），
 // 保持其行为不变，只在前面加一道 BT 判定。
 type btRequestHook struct {
@@ -163,19 +163,25 @@ func (h *btRequestHook) TCP(stream server.HyStream, reqAddr *string) ([]byte, er
 	return nil, nil
 }
 
-func (h *btRequestHook) UDP(data []byte, reqAddr *string) error {
-	if h.btEnabled() && bittorrent.SniffUDP(data) {
-		if h.logger != nil && h.throttle.Allow(h.tag) {
-			h.logger.Warn("bittorrent UDP session rejected",
-				zap.String("tag", h.tag),
-				zap.String("addr", *reqAddr))
+func (h *btRequestHook) UDP(packets [][]byte, reqAddr *string) (bool, error) {
+	if h.btEnabled() {
+		for _, data := range packets {
+			if !bittorrent.SniffUDP(data) {
+				continue
+			}
+			if h.logger != nil && h.throttle.Allow(h.tag) {
+				h.logger.Warn("bittorrent UDP session rejected",
+					zap.String("tag", h.tag),
+					zap.String("addr", *reqAddr))
+			}
+			return true, errBittorrent
 		}
-		return errBittorrent
 	}
 	// 只有原 hook 自己也想接管时才转交，避免我们因为 BT 判定返回 true
 	// 而让 sniff hook 处理它本来不会碰的请求。
 	if h.inner != nil && h.inner.Check(true, *reqAddr) {
-		return h.inner.UDP(data, reqAddr)
+		// Hysteria 2.13 的 QUIC ClientHello 嗅探可能需要多个报文，保留等待状态。
+		return h.inner.UDP(packets, reqAddr)
 	}
-	return nil
+	return true, nil
 }

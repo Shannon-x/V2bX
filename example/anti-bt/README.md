@@ -92,7 +92,7 @@ BT 客户端的首包几乎总是 DNS 查询或 QUIC 握手，会话被判成 `d
 | `core/sing/hook.go` | UDP 路径原本把 `m.Destination.Network()`（恒返回字面量 `"socks"`）当协议名传给 `CheckProtocolRule`，面板的 protocol 审计规则在 UDP 上永远不可能命中。改为使用嗅探结果 `m.Protocol`。 |
 | `core/sing/bittorrent_filter.go` | sing-box 的 bittorrent 嗅探器只注册了 TCP 握手 / uTP / UDP Tracker，**没有 DHT**。这里在入站 `PacketConn` 的读取侧逐包过滤。包装顺序必须在流量计数器之前——sing 的 `UnwrapCountPacketReader` 会剥掉计数器并收走它的 `CountFunc`，剥到本层因为不实现 `ReaderWithUpstream` 而停下，统计不受影响、过滤层也留在链路里。同时实现 `PacketReadWaitCreator` 以保住零拷贝快路径。 |
 | `common/throttle/` | 按 key 限频的日志闸门。BT 丢包每秒可达上百次，逐条记日志会把丢包路径变成 I/O 瓶颈。 |
-| `core/hy2/rule_enforce.go` | **hy2 原本完全不执行面板规则**——`core/hy2` 里对 limiter 的引用只有限速和在线统计，`block_domain` / `block_ip` / `block_port` 一条都不走。这里用 hysteria 自己的两个扩展点补上：`server.Outbound` 的 `CheckUDP()` 是**逐包**调用的（带每会话 256 条地址缓存），拿来做目的地址拦截；`server.RequestHook` 的 `UDP(data, reqAddr)` 能拿到**首包原始载荷**，是 hy2 上唯一能按报文特征识别 BT 的位置。 |
+| `core/hy2/rule_enforce.go` | **hy2 原本完全不执行面板规则**——`core/hy2` 里对 limiter 的引用只有限速和在线统计，`block_domain` / `block_ip` / `block_port` 一条都不走。这里用 hysteria 自己的两个扩展点补上：`server.Outbound` 的 `CheckUDP()` 是**逐包**调用的（带每会话 256 条地址缓存），拿来做目的地址拦截；`server.RequestHook` 的 `UDP(packets, reqAddr)` 能拿到**嗅探期间缓存的首批载荷**，是 hy2 上唯一能按报文特征识别 BT 的位置。 |
 | `common/bittorrent/` | 与内核无关的 BT 报文识别（DHT/KRPC、UDP Tracker、uTP），xray 与 hy2 两条路径共用。 |
 | `conf/limit.go` / `limiter/` | 新增开关 `LimitConfig.BlockBittorrentUDP`；面板下发的 protocol 规则含 `bittorrent` 时自动启用。 |
 
@@ -106,7 +106,7 @@ BT 客户端的首包几乎总是 DNS 查询或 QUIC 握手，会话被判成 `d
 
 （面板已经下发了含 `bittorrent` 的 protocol 审计规则的话，不加也会自动生效。）
 
-这个开关同时作用于三个内核：xray 与 sing-box 的逐包 UDP 过滤、hy2 的 UDP 首包拒绝。
+这个开关同时作用于三个内核：xray 与 sing-box 的逐包 UDP 过滤、hy2 的 UDP 首批报文拒绝（嗅探完成后不再检查）。
 默认关闭，开销见下面的实测数据。
 面板的 `block_domain` / `block_ip` / `block_port` 规则在 hy2 上现在无条件生效，
 不需要这个开关——那本来就是这些规则应有的行为，此前只是没接线。
@@ -313,7 +313,7 @@ hy2 的完整防护由三层叠加：
 |---|---|
 | ACL（配置） | BT 域名、BT 端口、SMTP、UDP 端口白名单 |
 | `core/hy2/rule_enforce.go`（代码） | 面板的 block_domain / block_ip / block_port（此前一条都不生效）；`Outbound.CheckUDP` 是**逐包**调用的 |
-| `RequestHook.UDP`（代码） | UDP 会话首包的 BT 报文识别，需要 `BlockBittorrentUDP` 开启 |
+| `RequestHook.UDP`（代码） | UDP 会话嗅探阶段首批缓存报文的 BT 识别，需要 `BlockBittorrentUDP` 开启 |
 
 注意 hysteria 的 ACL 语法从语法层面就写不出「阻断 bittorrent」
 （`Protocol` 只有 tcp/udp/both 三个传输层协议，写了会在编译期报

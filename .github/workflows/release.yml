@@ -129,11 +129,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          # 1.26.4 covers all reachable Go-stdlib advisories that
-          # govulncheck flags at v1.26.0/v1.26.1 (net/textproto GO-2026-5039,
-          # crypto/x509 GO-2026-5037, net/http GO-2026-4918, etc.).
-          # Keep this in sync with Dockerfile.
-          go-version: '1.26.4'
+          # Use the same minimum toolchain as the application and its cores.
+          go-version-file: go.mod
 
       - name: Get project dependencies
         run: |

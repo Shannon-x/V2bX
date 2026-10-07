@@ -183,7 +183,7 @@ xray 的域名匹配对空字符串是**子串匹配**，`""` 是任何域名的
 真正管用的是端口规则，而端口 25/465/587 一条都没有。BT 端口段同样没有。
 
 现在 `V2bX.sh` 与 `initconfig.sh`（两份是复制粘贴关系，容易漂移）
-生成的默认值统一为 13 条规则：
+生成的默认值统一为 14 条规则（geosite 分类齐全时）：
 
 ```
 block-private          防 SSRF / 内网穿透（geoip:private）
@@ -194,12 +194,19 @@ block-smtp             25 / 465 / 587
 block-bt-dht-bootstrap DHT 引导节点域名
 block-bt-pt-geosite    category-public-tracker / -pt / -ipfs
 block-bt-tracker-domain 常见 tracker 与 BT 站点
-block-ads              category-ads-all
 block-antivirus        category-antivirus
 block-competitor       category-vpnservices
-block-abuse-regexp     原有的迅雷/临时邮箱/竞品/统计正则
+block-abuse-geosite    迅雷 / 杀软 / Tor / 统计分类
+block-abuse-domain     临时邮箱 / 竞品 / 滥用域名
+block-abuse-regexp     百度定位 / torrent / ed2k 域名正则
 final                  IPv4_out
 ```
+
+默认关闭服务端广告分类封禁，避免误伤 `ads.tiktok.com` 等业务网站。
+旧节点升级管理脚本后执行菜单 19 或 `V2bX routerule`，会备份并替换旧的
+`block` 出站规则，清除其中的 `block-ads` / `geosite:category-ads-all`，
+包括没有 `ruleTag` 的旧版广告规则。非 `block` 自定义分流保留；
+面板下发及其他自定义出站上的拦截不在此更新范围内。
 
 hysteria2 的默认 ACL 也从 3 行换成了完整的 44 条。
 `conf/script_defaults_test.go` 会校验两个脚本生成的默认值彼此一致、
@@ -216,7 +223,7 @@ hysteria2 的默认 ACL 也从 3 行换成了完整的 44 条。
 
 以前两边各写各的：15 是写死的 heredoc，19 是 jq 动态生成，规则集并不一样，
 结果就是「生成的配置比更新后的弱」。现在两个入口都调用同一个
-`build_block_rules`，静态 heredoc 已经删除。
+`build_block_rules`；没有 jq 时使用内容一致的静态兜底。
 
 `conf/script_defaults_test.go` 把这件事钉死——它会**真的把脚本里那段
 shell 抽出来跑一遍**，然后断言：
@@ -225,6 +232,7 @@ shell 抽出来跑一遍**，然后断言：
 - 两者生成的 `route.json` 完全一致，且与 `example/route.json` 一致
 - **菜单 19 作用在菜单 15 的产出上是幂等的**——这就是「两个入口防护一致」的直接证明
 - 菜单 19 换掉禁止规则的同时，保留 `warp` / 流媒体分流之类的自定义规则
+- 菜单 19 实际执行更新函数，验证旧广告规则清除、原文件备份和重复更新幂等
 - 无论 `geosite.dat` 新旧、甚至完全缺失，基线防护（private / BT 协议 / BT 端口 /
   SMTP / DHT 引导 / tracker 域名 / 滥用正则）都必须在
 - 脚本里不允许再出现静态的 `route.json` heredoc
@@ -234,9 +242,9 @@ shell 抽出来跑一遍**，然后断言：
 
 | geosite.dat 状态 | 产出 |
 |---|---|
-| 发布件自带（Loyalsoldier） | 12 条禁止规则，全分类可用 |
-| 较老 / 自建，缺 3 个分类 | 11 条，逐条提示跳过了哪个分类 |
-| 完全缺失 | 8 条，保留全部硬编码防护，并大声告警 |
+| 发布件自带（Loyalsoldier） | 13 条禁止规则，另加 `final` 出站，不含广告封禁 |
+| 较老 / 自建，缺分类 | 按实际分类裁剪，逐条提示跳过了哪个分类 |
+| 完全缺失 | 9 条硬编码禁止规则，另加 `final` 出站，并提示缺失资源 |
 
 ### 域名规则实测：死规则和误伤都清掉了
 

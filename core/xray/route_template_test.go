@@ -257,6 +257,12 @@ func TestTemplateBlocksViaGeositeCategories(t *testing.T) {
 			t.Errorf("%-28s 应被拦截，实际走 %s", d, got)
 		}
 	}
+	// 保留完整 geosite 规则验证正常业务域名，防止广告分类封禁重新引入。
+	for _, d := range []string{"ads.tiktok.com", "www.tiktok.com", "business.tiktok.com", "analytics.tiktok.com"} {
+		if got := routeOf(r, d); got != "IPv4_out" {
+			t.Errorf("%-28s 应走默认出站，实际走 %s", d, got)
+		}
+	}
 }
 
 func TestTemplateDoesNotOverBlock(t *testing.T) {

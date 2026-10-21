@@ -32,31 +32,48 @@ type Sniffer struct {
 	sniffer []protocolSnifferWithMetadata
 }
 
-func NewSniffer(ctx context.Context) *Sniffer {
-	ret := &Sniffer{
-		sniffer: []protocolSnifferWithMetadata{
-			{func(c context.Context, b []byte) (SniffResult, error) { return http.SniffHTTP(b, ctx) }, false, net.Network_TCP},
-			{func(c context.Context, b []byte) (SniffResult, error) { return tls.SniffTLS(b) }, false, net.Network_TCP},
-			{func(c context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffBittorrent(b) }, false, net.Network_TCP},
-			{func(c context.Context, b []byte) (SniffResult, error) { return quic.SniffQUIC(b) }, false, net.Network_UDP},
-			// V2bX: 用本地实现替换上游 bittorrent.SniffUTP。上游版本时间戳判断恒为真，
-			// 对合法 uTP 包也永不命中；本地版本同时覆盖 DHT(KRPC) 与 UDP Tracker。
-			{func(c context.Context, b []byte) (SniffResult, error) {
-				h, err := SniffBittorrentUDP(b)
-				if err != nil {
-					return nil, err
-				}
-				return h, nil
-			}, false, net.Network_UDP},
-		},
+// The protocol sniffers are stateless, so the table is built once instead of
+// allocating five closures plus a slice for every connection that gets
+// sniffed (which, with sniffing on by default, is every connection). Only
+// the fakedns sniffers depend on the connection context and are still added
+// per connection when a fakedns engine is present. Callers must not mutate
+// the shared slice — NewSniffer copies before appending.
+var staticSniffers = []protocolSnifferWithMetadata{
+	{sniffHTTP, false, net.Network_TCP},
+	{sniffTLS, false, net.Network_TCP},
+	{sniffBittorrentTCP, false, net.Network_TCP},
+	{sniffQUIC, false, net.Network_UDP},
+	// V2bX: 用本地实现替换上游 bittorrent.SniffUTP。上游版本时间戳判断恒为真，
+	// 对合法 uTP 包也永不命中；本地版本同时覆盖 DHT(KRPC) 与 UDP Tracker。
+	{sniffBittorrentUDP, false, net.Network_UDP},
+}
+
+func sniffHTTP(ctx context.Context, b []byte) (SniffResult, error) { return http.SniffHTTP(b, ctx) }
+func sniffTLS(_ context.Context, b []byte) (SniffResult, error)    { return tls.SniffTLS(b) }
+func sniffBittorrentTCP(_ context.Context, b []byte) (SniffResult, error) {
+	return bittorrent.SniffBittorrent(b)
+}
+func sniffQUIC(_ context.Context, b []byte) (SniffResult, error) { return quic.SniffQUIC(b) }
+func sniffBittorrentUDP(_ context.Context, b []byte) (SniffResult, error) {
+	h, err := SniffBittorrentUDP(b)
+	if err != nil {
+		return nil, err
 	}
+	return h, nil
+}
+
+func NewSniffer(ctx context.Context) *Sniffer {
+	ret := &Sniffer{sniffer: staticSniffers}
 	if sniffer, err := newFakeDNSSniffer(ctx); err == nil {
-		others := ret.sniffer
-		ret.sniffer = append(ret.sniffer, sniffer)
+		others := staticSniffers
+		list := make([]protocolSnifferWithMetadata, 0, len(staticSniffers)+2)
 		fakeDNSThenOthers, err := newFakeDNSThenOthers(ctx, sniffer, others)
 		if err == nil {
-			ret.sniffer = append([]protocolSnifferWithMetadata{fakeDNSThenOthers}, ret.sniffer...)
+			list = append(list, fakeDNSThenOthers)
 		}
+		list = append(list, staticSniffers...)
+		list = append(list, sniffer)
+		ret.sniffer = list
 	}
 	return ret
 }

@@ -39,7 +39,7 @@ func buildInbound(option *conf.Options, nodeInfo *panel.NodeInfo, tag string) (*
 		err = buildShadowsocks(option, nodeInfo, in)
 		network = "tcp"
 	case "hysteria2":
-		err = buildHysteria2(nodeInfo, in)
+		err = buildHysteria2(option, nodeInfo, in)
 		network = "hysteria"
 	default:
 		return nil, fmt.Errorf("unsupported node type: %s, Only support: V2ray, Trojan, Shadowsocks, Hysteria2", nodeInfo.Type)
@@ -499,7 +499,7 @@ func buildTrojanFallbacks(fallbackConfigs []conf.FallBackConfigForXray) ([]*core
 	return trojanFallBacks, nil
 }
 
-func buildHysteria2(nodeInfo *panel.NodeInfo, inbound *coreConf.InboundDetourConfig) error {
+func buildHysteria2(option *conf.Options, nodeInfo *panel.NodeInfo, inbound *coreConf.InboundDetourConfig) error {
 	inbound.Protocol = "hysteria"
 	s := nodeInfo.Hysteria2
 	if s == nil {
@@ -546,6 +546,27 @@ func buildHysteria2(nodeInfo *panel.NodeInfo, inbound *coreConf.InboundDetourCon
 			finalmask = &coreConf.FinalMask{}
 		}
 		finalmask.Udp = udp
+	}
+	// Local QUIC tuning (receive windows / idle timeout / stream cap). Only
+	// the fields the operator set are copied; zero keeps xray's default, so
+	// an empty section is indistinguishable from no section at all.
+	if option != nil && option.XrayOptions != nil && !option.XrayOptions.Hysteria2QuicParams.IsZero() {
+		q := option.XrayOptions.Hysteria2QuicParams
+		if finalmask == nil {
+			finalmask = &coreConf.FinalMask{}
+		}
+		if finalmask.QuicParams == nil {
+			finalmask.QuicParams = &coreConf.QuicParamsConfig{}
+		}
+		qp := finalmask.QuicParams
+		qp.InitStreamReceiveWindow = q.InitStreamReceiveWindow
+		qp.MaxStreamReceiveWindow = q.MaxStreamReceiveWindow
+		qp.InitConnectionReceiveWindow = q.InitConnectionReceiveWindow
+		qp.MaxConnectionReceiveWindow = q.MaxConnectionReceiveWindow
+		qp.MaxIdleTimeout = q.MaxIdleTimeout
+		qp.KeepAlivePeriod = q.KeepAlivePeriod
+		qp.MaxIncomingStreams = q.MaxIncomingStreams
+		qp.DisablePathMTUDiscovery = q.DisablePathMTUDiscovery
 	}
 	inbound.StreamSetting.FinalMask = finalmask
 	sets, err := json.Marshal(settings)

@@ -12,9 +12,10 @@ import (
 )
 
 type Conf struct {
-	LogConfig   LogConfig    `json:"Log"`
-	CoresConfig []CoreConfig `json:"Cores"`
-	NodeConfig  []NodeConfig `json:"Nodes"`
+	LogConfig     LogConfig     `json:"Log"`
+	RuntimeConfig RuntimeConfig `json:"Runtime"`
+	CoresConfig   []CoreConfig  `json:"Cores"`
+	NodeConfig    []NodeConfig  `json:"Nodes"`
 
 	mu          sync.RWMutex  `json:"-"`
 	watcherMu   sync.Mutex    `json:"-"`

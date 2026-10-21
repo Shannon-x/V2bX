@@ -69,6 +69,12 @@ func serverHandle(_ *cobra.Command, _ []string) {
 			log.WithField("warning", w).Warn("Config validation")
 		}
 	}
+	// Tune the Go runtime before any core allocates its working set, so the
+	// GC pacer runs with the intended GOGC / memory limit from the first
+	// connection onwards.
+	rt := applyRuntimeConfig(&c.RuntimeConfig)
+	startPprof(rt.PprofPort)
+	startRuntimeStats(rt.StatsInterval)
 	limiter.Init()
 	log.Info("Start V2bX...")
 	vc, err := vCore.NewCore(c.CoresConfig)
@@ -94,6 +100,7 @@ func serverHandle(_ *cobra.Command, _ []string) {
 	sdns := os.Getenv("SING_DNS_PATH")
 	if watch {
 		err = c.Watch(config, xdns, sdns, func() {
+			applyRuntimeConfig(&c.RuntimeConfig)
 			nodes.Close()
 			err = vc.Close()
 			if err != nil {

@@ -3,6 +3,13 @@
     "Level": "info",
     "Output": ""
   },
+  "Runtime": {
+    "GCPercent": 50,
+    "MemoryLimitPercent": 70,
+    "MemoryLimit": "",
+    "StatsInterval": 300,
+    "PprofPort": 0
+  },
   "Cores": [
     {
       "Type": "sing",

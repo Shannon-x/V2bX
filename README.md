@@ -136,6 +136,7 @@ docker compose up -d
 ```json
 {
     "Log": { "Level": "error", "Output": "" },
+    "Runtime": { "GCPercent": 50, "MemoryLimitPercent": 70 },  /* Go 运行时调优，可省略 */
     "Cores": [ /* 内核配置 */ ],
     "Nodes": [ /* 节点配置 */ ]
 }
@@ -164,11 +165,11 @@ docker compose up -d
     "OutboundConfigPath": "/etc/V2bX/custom_outbound.json",
     "RouteConfigPath": "/etc/V2bX/route.json",
     "XrayConnectionConfig": {
-        "handshake": 10,
-        "connIdle": 300,
+        "handshake": 4,
+        "connIdle": 120,
         "uplinkOnly": 2,
         "downlinkOnly": 4,
-        "bufferSize": 256
+        "bufferSize": 64
     }
 }
 ```
@@ -185,14 +186,25 @@ docker compose up -d
 | `DnsConfigPath` | Xray DNS 配置文件路径 |
 | `OutboundConfigPath` | 自定义出站配置 |
 | `RouteConfigPath` | 自定义路由规则 |
-| `XrayConnectionConfig` | TCP 连接性能参数（握手超时、空闲超时、缓冲区等） |
+| `XrayConnectionConfig` | 连接策略：握手超时、空闲超时、单向关闭宽限、每连接缓冲上限（见下文及「内存与性能调优」） |
 
 > 连接日志默认不再刷进 systemd journal（此前空 `AccessPath` 会把每条连接写到 stdout，导致 journald 无限增长）。
 > 更新后无需改配置：连接日志自动落到 `/var/log/V2bX/access.log`，每天零点切分、超过 100MB 也会切分，
 > 旧文件 gzip 压缩、保留 90 天，可用 `zgrep '2026/07/06' /var/log/V2bX/access*.log*` 这类命令按日期检索。
 
-默认使用均衡通用参数（`handshake: 10`、`connIdle: 300`、`bufferSize: 256`），适合大多数 1GB 左右内存 VPS。  
-如果你是大带宽高内存机器可考虑提高到 `15/600/5/10/512`，低内存机器可降到 `4/60/1/2/32`。
+`XrayConnectionConfig` 的每一个值都是**按连接**付费的，是节点内存占用最大的开关：
+
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `handshake` | 4 | 连接建立后多少秒内必须完成代理握手，超时即断开。半开/探测连接会在这段时间里占着 TLS 状态和协程栈 |
+| `connIdle` | 120 | 双向都无流量多少秒后断开。客户端会把空闲长连接一直挂着直到服务端断开，所以这个值直接决定"空闲用户群"折算成多少并发连接（每条 REALITY 连接在服务端大约 60–80 KB） |
+| `uplinkOnly` / `downlinkOnly` | 2 / 4 | 一侧关闭后另一侧的宽限秒数 |
+| `bufferSize` | 64 | 每条连接每个方向内部管道最多排队多少 KB。吞吐由内核 socket 缓冲决定，这个管道只需要覆盖协程调度延迟；调大只会让每个慢客户端多占这么多内存（Xray 在 arm64 上的默认值只有 4 KB）。`0` 表示最多排队一次读取，`-1` 不限 |
+
+默认值与 v2node 相同（握手 4s / 空闲 120s），`bufferSize` 比 v2node 的 128 再减半。
+旧版脚本生成的 `10/300/2/4/256` 在三万并发连接规模下会比默认值多占 1 GB 以上内存，
+升级后建议按上表改回。带宽大、内存充裕且连接数不多的机器可以放宽到 `4/300/2/4/128`；
+内存极小的机器可继续压到 `4/60/1/2/16`。
 
 #### sing-box 内核
 
@@ -284,6 +296,7 @@ docker compose up -d
 | `DisableSniffing` | 禁用协议嗅探 |
 | `EnableFallback` | 启用回落（Vless/Trojan） |
 | `DisableCDNRealIP` | 关闭 CDN 回源真实 IP（见下文，默认开启） |
+| `Hysteria2QuicParams` | Xray 内核 hysteria2 节点的 QUIC 参数（接收窗口 / 空闲超时 / 并发流上限），见「内存与性能调优」 |
 
 **Cloudflare CDN 回源真实 IP（默认开启，无需配置）**
 
@@ -399,7 +412,11 @@ V2bX 支持多种证书模式，**不同域名的证书独立命名存储**，�
 
 ### Hysteria2 性能配置
 
-Hysteria2 节点需要独立的 YAML 配置文件（默认 `/etc/V2bX/hy2config.yaml`），脚本会自动生成高性能优化配置：
+> 跑在 **Xray 内核**上的 hysteria2 节点不读取这个 YAML，QUIC 参数通过节点的
+> `Hysteria2QuicParams` 配置，见「内存与性能调优」。
+
+独立 hysteria2 内核的节点需要独立的 YAML 配置文件（默认 `/etc/V2bX/hy2config.yaml`），脚本会自动生成高性能优化配置
+（16/32 MB 的窗口是为单条大流量链路准备的，每条流最多可缓冲这么多未读数据，用户多、内存小的机器建议减半）：
 
 ```yaml
 quic:
@@ -479,8 +496,8 @@ V2bX 使用面板下发的用户 `device_limit` 作为上限，并使用 Xboard-
             "OutboundConfigPath": "/etc/V2bX/custom_outbound.json",
             "RouteConfigPath": "/etc/V2bX/route.json",
             "XrayConnectionConfig": {
-                "handshake": 10, "connIdle": 300,
-                "uplinkOnly": 2, "downlinkOnly": 4, "bufferSize": 256
+                "handshake": 4, "connIdle": 120,
+                "uplinkOnly": 2, "downlinkOnly": 4, "bufferSize": 64
             }
         },
         {
@@ -543,6 +560,114 @@ V2bX 使用面板下发的用户 `device_limit` 作为上限，并使用 Xboard-
         }
     ]
 }
+```
+
+---
+
+## 内存与性能调优
+
+一个代理节点的内存几乎全部是"按连接付费"的：每条 VLESS/REALITY 连接在服务端要维持一份
+TLS 状态（约 30–50 KB）、5–6 个协程栈（各 8 KB 起）和一对内部管道。三万并发连接光这部分就
+是 2 GB 量级；而 Go 的垃圾回收器默认（`GOGC=100`）还会放任堆涨到存活数据的两倍再回收。
+所以降内存的思路是两条：**少留连接**、**少留垃圾**。
+
+### Runtime：Go 运行时调优
+
+`config.json` 顶层的 `Runtime` 段，所有字段可省略：
+
+```json
+"Runtime": {
+    "GCPercent": 50,            // GOGC。默认 50：堆上限 ≈ 存活数据 × 1.5（Go 默认 100 是 × 2）。0 = 保持 Go 默认；最小 10
+    "MemoryLimitPercent": 70,   // 软内存上限 = 可用内存（物理内存与 cgroup 限制取小）的 70%。逼近时 GC 加速回收，0 = 关闭
+    "MemoryLimit": "",          // 绝对值上限，如 "1536MiB" / "2GiB"，优先于百分比；非 Linux 平台只能用这个
+    "StatsInterval": 300,       // 每隔多少秒打印一行资源摘要并做瓶颈告警（见下文「怎么判断这台机器跑满了」），0 = 关闭
+    "PprofPort": 0              // 非 0 时在 127.0.0.1:<端口> 提供 Go pprof，用于抓堆/协程/CPU 剖析
+}
+```
+
+* 环境变量 `GOGC` / `GOMEMLIMIT` 一旦设置就优先于配置（方便在 systemd `Environment=` 里临时覆盖）。
+* `GCPercent` 越小，RSS 越贴近真实存活数据，但 GC 更频繁（每次 GC 的开销与存活数据成正比，
+  50 相比 100 大约多 3–5% CPU）。CPU 吃紧的机器可以回到 100，内存吃紧可以压到 30。
+* 软上限是安全网不是硬限制，**不会拒绝连接、不会限速**：堆接近上限时 GC 会把更多 CPU 用来回收
+  （最多 50%），真要超过也只是超过，不会崩溃。它把"内核 OOM 杀掉进程、三万用户瞬间掉线"换成
+  "CPU 升高 + 日志告警"。不要设成接近 100%，内核为三万条 TCP 连接维护的 socket 缓冲（几百 MB）
+  不在 Go 堆里；独占的机器可以放宽到 80。
+* 热重载 `config.json` 时 `GCPercent` / `MemoryLimit*` 会立即重新生效；`PprofPort` 需重启。
+* 启动日志会打印实际生效的值：`Go runtime tuned GOGC="50 (config)" memory_limit="2.68GiB (70% of 3.83GiB)"`。
+
+排查内存时打开 `PprofPort`（例如 6060），然后：
+
+```bash
+go tool pprof -top http://127.0.0.1:6060/debug/pprof/heap        # 谁占着内存
+curl -s http://127.0.0.1:6060/debug/pprof/goroutine?debug=1 | head # 协程数 ≈ 连接数 × 5
+```
+
+### 怎么判断这台机器跑满了、什么时候该加机器
+
+`StatsInterval`（默认 300 秒）会在日志里打印一行：
+
+```
+Runtime stats mem_used=1.52GiB heap_live=1.01GiB mem_limit=2.68GiB goroutines=152310 gc_cpu=3.2% load1=1.98/4
+```
+
+| 字段 | 含义 | 跑满的信号 |
+|------|------|-----------|
+| `mem_used` / `mem_limit` | Go 运行时占用 vs 软上限 | 持续 ≥ 90% |
+| `heap_live` | 连接真正需要的存活数据（其余是待回收的垃圾） | 接近 `mem_limit` 说明不是 GC 的问题，是连接太多 |
+| `goroutines` | Xray 每条连接约 5 个协程，`goroutines / 5` ≈ 并发连接数 | 配合每连接 70–100 KB 估算容量 |
+| `gc_cpu` | 这段时间 GC 占用的 CPU 比例 | 持续 ≥ 15%：内存被压到上限，GC 在硬扛 |
+| `load1` | 1 分钟负载 / 核数 | ≥ 0.9 × 核数：CPU 到顶 |
+
+命中阈值时会额外打 **WARN**（`内存已接近这台机器的承载上限…` / `CPU 负载已接近核数…`），
+用 `journalctl -u V2bX | grep -E 'Runtime stats|承载上限|接近核数'` 就能回看趋势。
+这几行不受 `Log.Level` 影响：节点按常见配置写 `"Level": "error"` 也照样会打印，不想看就把 `StatsInterval` 设为 0。
+内存告警先确认 `connIdle` / `bufferSize` 已按本文收紧，仍持续出现就说明连接数到顶，该加机器了；
+CPU 告警则是带宽/连接数到顶（REALITY 握手和 AEAD 加解密都吃 CPU）。
+
+**加机器怎么分流**：在面板里按同样参数再建一个节点（REALITY 的 dest / 私钥 / shortId 可以完全一样），
+把用户或订阅分到两个节点；或者两台机器用同一个节点配置、域名做多条 A 记录（DNS 轮询），客户端自然分散。
+不建议前置一台 HAProxy 之类做四层转发——它自己会先成为瓶颈，而且 Proxy Protocol 还要额外配置。
+
+### 连接策略：XrayConnectionConfig
+
+见上文「内核配置 → Xray 内核」的字段表。要点：
+
+* `connIdle` 决定空闲连接留多久，是并发连接数的直接来源。120 s 与 v2node 一致；
+  如果面板里看到 TCP 连接数远高于实际活跃用户，优先检查这个值是否还是旧脚本的 300。
+* `bufferSize` 是每条慢连接的额外内存，不是吞吐开关。64 KB 已经足够，256 KB 只会让内存翻几倍。
+* 速率限制（`SpeedLimit`）会让连接退出 splice 零拷贝路径，走限速的连接在 Go 侧多一份缓冲，
+  不需要限速的节点就不要配。
+* `AccessPath: "none"` 可以关掉连接日志，高连接数节点每秒上千条日志的格式化开销可观。
+
+### hysteria2（Xray 内核）QUIC 参数
+
+Xray 内核的 hysteria2 节点默认使用 8 MiB 流窗口 / 20 MiB 连接窗口 / 每连接 1024 条流，
+这是为单条大流量链路准备的。每条流最多可以缓冲窗口大小的未读上行数据，用户多、内存小的机器
+可以在节点的 `XrayOptions` 里收紧（单位字节，窗口最小 16384；超时单位秒，`maxIdleTimeout`
+4–120，`keepAlivePeriod` 2–60；`maxIncomingStreams` 最小 8，0 表示保持 Xray 默认）：
+
+```json
+"Hysteria2QuicParams": {
+    "initStreamReceiveWindow": 2097152,
+    "maxStreamReceiveWindow": 4194304,
+    "initConnectionReceiveWindow": 5242880,
+    "maxConnectionReceiveWindow": 10485760,
+    "maxIdleTimeout": 20,
+    "maxIncomingStreams": 256
+}
+```
+
+面板下发的 brutal 带宽（`up_mbps` / `down_mbps`）不受影响。
+
+### 内核侧
+
+面板显示的内存是整机数字，包含内核为 TCP 连接维护的 socket 缓冲。三万条连接时这部分
+通常有几百 MB，与 V2bX 进程无关。可以适当调小自动调优的上限：
+
+```bash
+sysctl -w net.ipv4.tcp_rmem="4096 87380 4194304"
+sysctl -w net.ipv4.tcp_wmem="4096 65536 4194304"
+sysctl -w net.ipv4.tcp_fin_timeout=30
 ```
 
 ---

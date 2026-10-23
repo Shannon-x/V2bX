@@ -715,7 +715,10 @@ generate_config_file() {
     # 初始化核心配置数组
     cores_config="["
 
-    # Xray 核心配置 - 带高性能连接参数优化
+    # Xray 核心配置 - 连接参数按"多用户、小内存"场景取值：
+    # 与 v2node 相同的超时（握手 4s / 空闲 120s），bufferSize 收紧到 64KB。
+    # 每条连接都会按这些值占内存，connIdle 300 + bufferSize 256 在三万连接
+    # 规模下会多吃 1GB 以上内存，详见 README「内存与性能调优」。
     if [ "$core_xray" = true ]; then
         cores_config+="
     {
@@ -729,11 +732,11 @@ generate_config_file() {
         \"OutboundConfigPath\": \"/etc/V2bX/custom_outbound.json\",
         \"RouteConfigPath\": \"/etc/V2bX/route.json\",
         \"XrayConnectionConfig\": {
-            \"handshake\": 10,
-            \"connIdle\": 300,
+            \"handshake\": 4,
+            \"connIdle\": 120,
             \"uplinkOnly\": 2,
             \"downlinkOnly\": 4,
-            \"bufferSize\": 256
+            \"bufferSize\": 64
         }
     },"
     fi
@@ -782,11 +785,20 @@ generate_config_file() {
     formatted_nodes_config="${nodes_config_str%,}"
 
     # 创建 config.json 文件
+    # Runtime: Go 运行时调优。GCPercent 50 让堆上限从"存活数据 ×2"降到 ×1.5，
+    # MemoryLimitPercent 70 给 GC 一个软上限（物理内存的 70%），逼近时主动回收。
     cat <<EOF > /etc/V2bX/config.json
 {
     "Log": {
         "Level": "error",
         "Output": ""
+    },
+    "Runtime": {
+        "GCPercent": 50,
+        "MemoryLimitPercent": 70,
+        "MemoryLimit": "",
+        "StatsInterval": 300,
+        "PprofPort": 0
     },
     "Cores": $cores_config,
     "Nodes": [$formatted_nodes_config]

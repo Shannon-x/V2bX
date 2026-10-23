@@ -387,3 +387,11 @@ require (
 replace github.com/xtls/xray-core => github.com/wyx2685/xray-core v0.0.0-20260930151924-e087e74a1bf2
 
 replace github.com/apernet/quic-go => github.com/apernet/quic-go v0.63.1-0.20261004180939-a10df75c260c
+
+// REALITY 8cdf7bf (2026-09-08 06:21) rejects every ClientHello without an
+// X25519MLKEM768 key share. sing-box (all versions) and mihomo (default
+// settings) leave that key share out, so their users fail with "reality
+// verification failed". e1986a4 is the commit right before it; the two
+// differ only in that check. Drop this pin once upstream accepts X25519-only
+// clients again.
+replace github.com/xtls/reality => github.com/xtls/reality v0.0.0-20260908045812-e1986a4d31ca

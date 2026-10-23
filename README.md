@@ -620,6 +620,7 @@ Runtime stats mem_used=1.52GiB heap_live=1.01GiB mem_limit=2.68GiB goroutines=15
 
 命中阈值时会额外打 **WARN**（`内存已接近这台机器的承载上限…` / `CPU 负载已接近核数…`），
 用 `journalctl -u V2bX | grep -E 'Runtime stats|承载上限|接近核数'` 就能回看趋势。
+这几行不受 `Log.Level` 影响：节点按常见配置写 `"Level": "error"` 也照样会打印，不想看就把 `StatsInterval` 设为 0。
 内存告警先确认 `connIdle` / `bufferSize` 已按本文收紧，仍持续出现就说明连接数到顶，该加机器了；
 CPU 告警则是带宽/连接数到顶（REALITY 握手和 AEAD 加解密都吃 CPU）。
 

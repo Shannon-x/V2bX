@@ -13,6 +13,29 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// rtLog carries the Runtime section's own output: what tuning took effect,
+// the periodic "Runtime stats" line and the capacity warnings. It writes to
+// the main log's destination but never filters below Info, because nodes are
+// normally deployed with Log.Level "error", which would hide exactly the
+// lines an operator enables StatsInterval to see. StatsInterval 0 turns the
+// periodic part off.
+var rtLog = log.StandardLogger()
+
+// initRuntimeLogger must run after the main logger's level and output are
+// configured.
+func initRuntimeLogger() {
+	std := log.StandardLogger()
+	if std.IsLevelEnabled(log.InfoLevel) {
+		rtLog = std
+		return
+	}
+	l := log.New()
+	l.SetOutput(std.Out)
+	l.SetFormatter(std.Formatter)
+	l.SetLevel(log.InfoLevel)
+	rtLog = l
+}
+
 // applyRuntimeConfig installs the GC percent / soft memory limit from the
 // top-level "Runtime" section and logs what took effect. It is called once at
 // startup and again after every config hot-reload, so operators can tune the
@@ -20,7 +43,7 @@ import (
 func applyRuntimeConfig(rc *conf.RuntimeConfig) conf.ResolvedRuntime {
 	resolved := rc.Resolve()
 	for _, w := range resolved.Warnings {
-		log.WithField("warning", w).Warn("Runtime config")
+		rtLog.WithField("warning", w).Warn("Runtime config")
 	}
 	res := runtimetune.Apply(runtimetune.Options{
 		GCPercent:          resolved.GCPercent,
@@ -28,7 +51,7 @@ func applyRuntimeConfig(rc *conf.RuntimeConfig) conf.ResolvedRuntime {
 		MemoryLimit:        resolved.MemoryLimit,
 	})
 	for _, w := range res.Warnings {
-		log.WithField("warning", w).Warn("Runtime tuning")
+		rtLog.WithField("warning", w).Warn("Runtime tuning")
 	}
 	gc := "default"
 	if res.GCPercent > 0 {
@@ -38,7 +61,7 @@ func applyRuntimeConfig(rc *conf.RuntimeConfig) conf.ResolvedRuntime {
 	if res.MemoryLimit > 0 {
 		limit = runtimetune.FormatSize(res.MemoryLimit)
 	}
-	log.WithFields(log.Fields{
+	rtLog.WithFields(log.Fields{
 		"GOGC":         gc + " (" + res.GCSource + ")",
 		"memory_limit": limit + " (" + res.MemorySource + ")",
 	}).Info("Go runtime tuned")
@@ -102,18 +125,18 @@ func logRuntimeStats(st runtimetune.Stats, warn bool) {
 		"gc_cpu":     fmt.Sprintf("%.1f%%", st.GCCPUShare*100),
 		"load1":      fmt.Sprintf("%.2f/%d", st.Load1, st.NumCPU),
 	}
-	log.WithFields(fields).Info("Runtime stats")
+	rtLog.WithFields(fields).Info("Runtime stats")
 	if !warn {
 		return
 	}
 
 	memBound := st.MemLimited || st.GCCPUShare >= statsGCCPUWarn || (st.MemoryLimit > 0 && memPct >= statsMemUseWarn)
 	if memBound {
-		log.WithFields(fields).Warn("内存已接近这台机器的承载上限（GC 被内存软上限压着跑，回收开销上升）：" +
+		rtLog.WithFields(fields).Warn("内存已接近这台机器的承载上限（GC 被内存软上限压着跑，回收开销上升）：" +
 			"先确认 connIdle/bufferSize 是否已按 README 收紧；若仍持续出现，这台机器的连接数已到顶，建议新增节点分流")
 	}
 	if st.Load1 > 0 && st.NumCPU > 0 && st.Load1 >= float64(st.NumCPU)*statsLoadWarn {
-		log.WithFields(fields).Warn("CPU 负载已接近核数：带宽/连接数已接近这台机器的 CPU 上限，建议新增节点分流")
+		rtLog.WithFields(fields).Warn("CPU 负载已接近核数：带宽/连接数已接近这台机器的 CPU 上限，建议新增节点分流")
 	}
 }
 
@@ -139,9 +162,9 @@ func startPprof(port int) {
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() {
-			log.WithField("addr", addr).Info("pprof listening (loopback only)")
+			rtLog.WithField("addr", addr).Info("pprof listening (loopback only)")
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.WithField("err", err).Warn("pprof server stopped")
+				rtLog.WithField("err", err).Warn("pprof server stopped")
 			}
 		}()
 	})

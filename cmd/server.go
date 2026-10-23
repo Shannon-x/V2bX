@@ -72,6 +72,7 @@ func serverHandle(_ *cobra.Command, _ []string) {
 	// Tune the Go runtime before any core allocates its working set, so the
 	// GC pacer runs with the intended GOGC / memory limit from the first
 	// connection onwards.
+	initRuntimeLogger()
 	rt := applyRuntimeConfig(&c.RuntimeConfig)
 	startPprof(rt.PprofPort)
 	startRuntimeStats(rt.StatsInterval)

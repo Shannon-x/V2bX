@@ -1,0 +1,56 @@
+# Secret scan for new commits (see .github/workflows/secret-scan.yml).
+#
+# Test data must use obviously fake values. This config fails CI when a
+# high-entropy credential shows up in a new commit.
+
+[extend]
+useDefault = true
+
+# Gateway / merchant credentials written as `'key' => '...'`, `key: "..."`,
+# `KEY=...` etc. The default generic-api-key rule misses short field names like
+# `key` next to a 32-char merchant key.
+[[rules]]
+id = "credential-field-assignment"
+description = "High-entropy value assigned to a credential-like field"
+regex = '''(?i)["']?\b(?:key|secret|token|password|passwd|pwd|private_?key|api_?key|app_?secret|merchant_?key|sign_?key|access_?key|client_?secret|webhook_?secret)\b["']?\s*(?:=>|=|:)\s*["']([A-Za-z0-9+/_=-]{20,})["']'''
+secretGroup = 1
+entropy = 3.3
+keywords = ["key", "secret", "token", "pass", "pwd"]
+
+[[allowlists]]
+description = "Build output, lockfiles and vendored libraries"
+paths = [
+  '''(^|/)(dist|build)/''',
+  '''\.min\.(js|css)$''',
+  '''(^|/)(composer|package-lock|yarn|pnpm-lock)\.(json|lock|yaml)$''',
+  '''(^|/)vendor/''',
+  '''(^|/)node_modules/''',
+]
+
+[[allowlists]]
+description = "Obviously fake or publicly documented values"
+regexTarget = "secret"
+regexes = [
+  # Real secrets never contain these words; test data should.
+  '''(?i)(fake|dummy|example|sample|placeholder|changeme|not[-_]?real|for[-_]?tests?|test[-_]?(key|secret|token)|x{6,})''',
+  '''AKIAIOSFODNN7EXAMPLE''',
+  # Letters-only values are identifiers / i18n keys (`key: "commissionNoticeEnabled"`),
+  # not random credentials.
+  '''^[A-Za-z_]+$''',
+  # camelCase setting names with digits (`ticketAttachmentS3AccessKey`, `commissionTier2Rate`)
+  '''^[a-z]+(?:[A-Z][a-z]+|[A-Z]?[0-9]+)+$''',
+  # Placeholder certificate names used by node tests
+  '''^LE-CERT-FOR-''',
+  # Google's public reCAPTCHA test site keys
+  '''^6LeIxAcTAAAAA[A-Za-z0-9_-]+$''',
+]
+
+[[allowlists]]
+description = "Public release-signing key fingerprints in Dockerfiles"
+regexTarget = "line"
+regexes = ['''GPG_KEYS\s*=''']
+
+[[allowlists]]
+description = "Certificate key-type constants, not secrets"
+regexTarget = "line"
+regexes = ['''KeyType\s*=\s*certcrypto?\.''']

@@ -7,8 +7,10 @@
     {
         "tag": "IPv6_out",
         "protocol": "freedom",
-        "settings": {
-            "domainStrategy": "UseIPv6"
+        "streamSettings": {
+            "sockopt": {
+                "domainStrategy": "UseIPv6"
+            }
         }
     },
     {

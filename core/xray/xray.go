@@ -168,7 +168,9 @@ func getCore(c *conf.XrayConfig) *core.Instance {
 		}
 	}
 	var outBoundConfig []*core.OutboundHandlerConfig
-	for _, config := range coreCustomOutboundConfig {
+	for i := range coreCustomOutboundConfig {
+		config := &coreCustomOutboundConfig[i]
+		migrateLegacyFreedomDomainStrategy(config)
 		oc, err := config.Build()
 		if err != nil {
 			log.WithField("err", err).Panic("Failed to understand Outbound config, Please check: https://xtls.github.io/config/outbound.html for help")

@@ -2,10 +2,12 @@ package xray
 
 import (
 	"fmt"
+	"strings"
 
 	"encoding/json"
 
 	conf2 "github.com/InazumaV/V2bX/conf"
+	log "github.com/sirupsen/logrus"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/infra/conf"
 )
@@ -21,24 +23,17 @@ func buildOutbound(config *conf2.Options, tag string) (*core.OutboundHandlerConf
 		outboundDetourConfig.SendThrough = &config.SendIP
 	}
 
-	// Freedom Protocol setting
-	var domainStrategy = "Asis"
+	// Freedom resolves domains according to streamSettings.sockopt.domainStrategy.
+	// The Freedom "settings.domainStrategy" field is deprecated in Xray-core:
+	// it is still migrated automatically, with a warning on every build, and
+	// is due to be removed.
 	if config.XrayOptions.EnableDNS {
-		if config.XrayOptions.DNSType != "" {
-			domainStrategy = config.XrayOptions.DNSType
-		} else {
+		domainStrategy := config.XrayOptions.DNSType
+		if domainStrategy == "" {
 			domainStrategy = "UseIP"
 		}
+		setSockoptDomainStrategy(outboundDetourConfig, domainStrategy)
 	}
-	proxySetting := &conf.FreedomConfig{
-		DomainStrategy: domainStrategy,
-	}
-	var setting json.RawMessage
-	setting, err := json.Marshal(proxySetting)
-	if err != nil {
-		return nil, fmt.Errorf("marshal proxy config error: %s", err)
-	}
-	outboundDetourConfig.Settings = &setting
 	return outboundDetourConfig.Build()
 }
 
@@ -52,5 +47,89 @@ func buildCustomOutbound(rawJSON string, tag string) (*core.OutboundHandlerConfi
 	}
 	// Override tag to match the node tag
 	outboundDetourConfig.Tag = tag
+	migrateLegacyFreedomDomainStrategy(outboundDetourConfig)
 	return outboundDetourConfig.Build()
+}
+
+// migrateLegacyFreedomDomainStrategy moves a Freedom outbound's legacy
+// "settings.domainStrategy" / "settings.targetStrategy" into
+// "streamSettings.sockopt.domainStrategy" and drops it from settings.
+//
+// Older configs, including the custom_outbound.json written by earlier install
+// scripts (its IPv4_out is the target of the route "final" rule), use:
+//
+//	{"protocol": "freedom", "settings": {"domainStrategy": "UseIPv4v6"}}
+//
+// Xray-core still migrates this itself, but logs a deprecation warning every
+// time the outbound is built and says the field will be removed. Once it is
+// removed, such files would silently fall back to AsIs (system resolver, no
+// Xray DNS, no IPv4/IPv6 preference). Doing the move here keeps existing files
+// working without edits. An explicit sockopt.domainStrategy wins.
+func migrateLegacyFreedomDomainStrategy(c *conf.OutboundDetourConfig) {
+	if c == nil || c.Settings == nil {
+		return
+	}
+	switch strings.ToLower(c.Protocol) {
+	case "freedom", "direct":
+	default:
+		return
+	}
+	var settings map[string]json.RawMessage
+	if err := json.Unmarshal(*c.Settings, &settings); err != nil {
+		// Leave the error to Build(), which reports it with full context.
+		return
+	}
+	var domainStrategy, targetStrategy string
+	found := false
+	for key, raw := range settings {
+		var dst *string
+		switch strings.ToLower(key) {
+		case "domainstrategy":
+			dst = &domainStrategy
+		case "targetstrategy":
+			dst = &targetStrategy
+		default:
+			continue
+		}
+		if err := json.Unmarshal(raw, dst); err != nil {
+			return
+		}
+		delete(settings, key)
+		found = true
+	}
+	if !found {
+		return
+	}
+	strategy := targetStrategy
+	if strategy == "" {
+		strategy = domainStrategy
+	}
+	cleaned, err := json.Marshal(settings)
+	if err != nil {
+		return
+	}
+	raw := json.RawMessage(cleaned)
+	c.Settings = &raw
+	if strategy == "" || strings.EqualFold(strategy, "AsIs") {
+		return
+	}
+	if c.StreamSetting != nil && c.StreamSetting.SocketSettings != nil &&
+		c.StreamSetting.SocketSettings.DomainStrategy != "" {
+		return
+	}
+	setSockoptDomainStrategy(c, strategy)
+	log.WithFields(log.Fields{
+		"tag":      c.Tag,
+		"strategy": strategy,
+	}).Debug("Moved Freedom settings.domainStrategy to streamSettings.sockopt.domainStrategy")
+}
+
+func setSockoptDomainStrategy(c *conf.OutboundDetourConfig, strategy string) {
+	if c.StreamSetting == nil {
+		c.StreamSetting = &conf.StreamConfig{}
+	}
+	if c.StreamSetting.SocketSettings == nil {
+		c.StreamSetting.SocketSettings = &conf.SocketConfig{}
+	}
+	c.StreamSetting.SocketSettings.DomainStrategy = strategy
 }

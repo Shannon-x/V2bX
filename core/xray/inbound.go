@@ -424,17 +424,28 @@ func buildShadowsocks(config *conf.Options, nodeInfo *panel.NodeInfo, inbound *c
 	settings := &coreConf.ShadowsocksServerConfig{
 		Cipher: s.Cipher,
 	}
-	p := make([]byte, 32)
-	_, err := rand.Read(p)
-	if err != nil {
-		return fmt.Errorf("generate random password error: %s", err)
-	}
-	randomPasswd := hex.EncodeToString(p)
+	// Xray needs at least one static user, so add a random placeholder that no
+	// client knows. Real users arrive later through AddUsers.
 	cipher := s.Cipher
+	var randomPasswd string
 	if s.ServerKey != "" {
+		// Shadowsocks 2022 multi-user: Xray-core v26.9.30+ rejects any user
+		// key that is not exactly the cipher's key length ("bad key"), which
+		// used to stop the whole inbound from starting. Generate raw key
+		// bytes of the right size and base64 them, as the panel does.
+		p := make([]byte, ss2022KeyLength(s.Cipher))
+		if _, err := rand.Read(p); err != nil {
+			return fmt.Errorf("generate random password error: %s", err)
+		}
 		settings.Password = s.ServerKey
-		randomPasswd = base64.StdEncoding.EncodeToString([]byte(randomPasswd))
+		randomPasswd = base64.StdEncoding.EncodeToString(p)
 		cipher = ""
+	} else {
+		p := make([]byte, 32)
+		if _, err := rand.Read(p); err != nil {
+			return fmt.Errorf("generate random password error: %s", err)
+		}
+		randomPasswd = hex.EncodeToString(p)
 	}
 	defaultSSuser := &coreConf.ShadowsocksUserConfig{
 		Cipher:   cipher,

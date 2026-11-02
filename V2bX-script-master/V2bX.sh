@@ -858,20 +858,26 @@ EOF
 EOF
 
     # 创建 custom_outbound.json 文件
+    # 域名策略写在 streamSettings.sockopt：Xray-core v26.9.30 起 freedom 的 settings.domainStrategy
+    # 不再生效（V2bX 会自动把旧写法搬过去，但新生成的文件直接用新写法）。
     cat <<'EOF' > /etc/V2bX/custom_outbound.json
 [
     {
         "tag": "IPv4_out",
         "protocol": "freedom",
-        "settings": {
-            "domainStrategy": "UseIPv4v6"
+        "streamSettings": {
+            "sockopt": {
+                "domainStrategy": "UseIPv4v6"
+            }
         }
     },
     {
         "tag": "IPv6_out",
         "protocol": "freedom",
-        "settings": {
-            "domainStrategy": "UseIPv6"
+        "streamSettings": {
+            "sockopt": {
+                "domainStrategy": "UseIPv6"
+            }
         }
     },
     {

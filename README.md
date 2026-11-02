@@ -184,7 +184,7 @@ docker compose up -d
 | `Log.Compress` | 轮转后是否 gzip 压缩旧日志，默认 true |
 | `AssetPath` | geoip.dat / geosite.dat 文件路径 |
 | `DnsConfigPath` | Xray DNS 配置文件路径 |
-| `OutboundConfigPath` | 自定义出站配置 |
+| `OutboundConfigPath` | 自定义出站配置。freedom 出站的域名策略请写在 `streamSettings.sockopt.domainStrategy`；旧写法 `settings.domainStrategy` 在 Xray-core v26.9.30 起不再生效，V2bX 会自动搬到 sockopt，不用手改 |
 | `RouteConfigPath` | 自定义路由规则 |
 | `XrayConnectionConfig` | 连接策略：握手超时、空闲超时、单向关闭宽限、每连接缓冲上限（见下文及「内存与性能调优」） |
 
@@ -316,7 +316,7 @@ AnyTLS 时会强制进入证书配置）。
 | `EnableTFO` | 启用 TCP Fast Open |
 | `EnableUot` | 启用 UDP over TCP |
 | `EnableDNS` | 启用 Xray 内置 DNS |
-| `DNSType` | DNS 策略：`AsIs` / `UseIP` / `UseIPv4` / `UseIPv6` |
+| `DNSType` | DNS 策略：`AsIs` / `UseIP` / `UseIPv4` / `UseIPv6`，仅在 `EnableDNS` 为 true 时生效（作用于节点默认 freedom 出站） |
 | `EnableProxyProtocol` | 启用 Proxy Protocol（反代场景） |
 | `DisableSniffing` | 禁用协议嗅探 |
 | `EnableFallback` | 启用回落（Vless/Trojan） |

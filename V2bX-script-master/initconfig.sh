@@ -505,8 +505,8 @@ add_node_config() {
         if [[ "$core_hysteria2" == true || "$core_xray" == true ]]; then
             echo -e "${green}5. Hysteria2${plain}"
         fi
-        if [[ "$core_sing" == true ]]; then
-            echo -e "${green}6. AnyTLS${plain}（sing-box 内核，强制 TLS）"
+        if [[ "$core_type" == "1" || "$core_type" == "3" ]]; then
+            echo -e "${green}6. AnyTLS${plain}（Xray / sing-box 内核，强制 TLS）"
         fi
         read -rp "请输入：" NodeType
         case "$NodeType" in
@@ -530,8 +530,14 @@ add_node_config() {
         enable_tfo=false
         istls="y"
     elif [ "$NodeType" == "anytls" ]; then
-        # AnyTLS 协议建立在 TLS 之上，必须配置证书，这里强制走 TLS 流程
+        # AnyTLS 协议建立在 TLS 之上，必须配置证书，这里强制走 TLS 流程。
+        # Xray 内核与 sing-box 内核都支持 anytls：用户密码 = 面板 UUID，
+        # padding_scheme / network 由面板下发，节点侧只需要证书。
         istls="y"
+        if [ "$core_type" == "2" ]; then
+            echo -e "${red}Hysteria2 内核不支持 AnyTLS，请选择 Xray 或 sing-box 内核。${plain}"
+            return 1
+        fi
     fi
 
     if [[ "$isreality" != "y" && "$isreality" != "Y" && "$istls" != "y" ]]; then

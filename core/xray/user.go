@@ -13,6 +13,7 @@ import (
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/proxy"
+	"github.com/xtls/xray-core/proxy/anytls"
 	hyaccount "github.com/xtls/xray-core/proxy/hysteria/account"
 )
 
@@ -206,6 +207,8 @@ func (c *Xray) AddUsers(p *vCore.AddUsersParams) (added int, err error) {
 			p.Shadowsocks.ServerKey)
 	case "hysteria2":
 		users = buildHysteria2Users(p.Tag, p.Users)
+	case "anytls":
+		users = buildAnyTLSUsers(p.Tag, p.Users)
 	default:
 		return 0, fmt.Errorf("unsupported node type: %s", p.NodeInfo.Type)
 	}
@@ -244,5 +247,27 @@ func buildHysteria2User(tag string, userInfo *panel.UserInfo) (user *protocol.Us
 		Level:   0,
 		Email:   format.UserTag(tag, userInfo.Uuid),
 		Account: serial.ToTypedMessage(hysteria2Account),
+	}
+}
+
+func buildAnyTLSUsers(tag string, userInfo []panel.UserInfo) (users []*protocol.User) {
+	users = make([]*protocol.User, len(userInfo))
+	for i := range userInfo {
+		users[i] = buildAnyTLSUser(tag, &userInfo[i])
+	}
+	return users
+}
+
+// buildAnyTLSUser maps a panel user to an xray anytls account. Same as v2node
+// (and the sing-box core): the user's UUID is the AnyTLS password; xray-core
+// hashes it with sha256 on insert and the client sends sha256(password).
+func buildAnyTLSUser(tag string, userInfo *panel.UserInfo) (user *protocol.User) {
+	anyTLSAccount := &anytls.Account{
+		Password: userInfo.Uuid,
+	}
+	return &protocol.User{
+		Level:   0,
+		Email:   format.UserTag(tag, userInfo.Uuid),
+		Account: serial.ToTypedMessage(anyTLSAccount),
 	}
 }

@@ -41,8 +41,11 @@ func buildInbound(option *conf.Options, nodeInfo *panel.NodeInfo, tag string) (*
 	case "hysteria2":
 		err = buildHysteria2(nodeInfo, in)
 		network = "hysteria"
+	case "anytls":
+		err = buildAnyTLS(nodeInfo, in)
+		network = anyTLSNetwork(nodeInfo.AnyTls)
 	default:
-		return nil, fmt.Errorf("unsupported node type: %s, Only support: V2ray, Trojan, Shadowsocks, Hysteria2", nodeInfo.Type)
+		return nil, fmt.Errorf("unsupported node type: %s, Only support: V2ray, Trojan, Shadowsocks, Hysteria2, AnyTLS", nodeInfo.Type)
 	}
 	if err != nil {
 		return nil, err
@@ -85,6 +88,10 @@ func buildInbound(option *conf.Options, nodeInfo *panel.NodeInfo, tag string) (*
 	case "trojan":
 		if nodeInfo.Trojan != nil {
 			networkSettings = nodeInfo.Trojan.NetworkSettings
+		}
+	case "anytls":
+		if nodeInfo.AnyTls != nil {
+			networkSettings = nodeInfo.AnyTls.NetworkSettings
 		}
 	}
 
@@ -497,6 +504,67 @@ func buildTrojanFallbacks(fallbackConfigs []conf.FallBackConfigForXray) ([]*core
 		}
 	}
 	return trojanFallBacks, nil
+}
+
+// anyTLSNetwork returns the transport an AnyTLS node runs on. The panel may
+// leave network empty (plain AnyTLS over TLS), which means tcp.
+func anyTLSNetwork(v *panel.AnyTlsNode) string {
+	if v == nil || v.Network == "" {
+		return "tcp"
+	}
+	return v.Network
+}
+
+// buildAnyTLS builds the Xray AnyTLS inbound, mirroring v2node's buildAnyTLS:
+// settings only carry the panel's paddingScheme (one line per entry, joined
+// with "\n" inside xray-core); users are injected later through AddUsers.
+// The transport defaults to tcp but the panel may select ws / grpc /
+// httpupgrade / xhttp via network + network_settings. TLS itself is applied by
+// buildInbound from nodeInfo.Security (the panel always marks anytls as tls).
+func buildAnyTLS(nodeInfo *panel.NodeInfo, inbound *coreConf.InboundDetourConfig) error {
+	inbound.Protocol = "anytls"
+	v := nodeInfo.AnyTls
+	if v == nil {
+		return fmt.Errorf("anytls config is missing")
+	}
+	settings := &coreConf.AnyTLSServerConfig{
+		PaddingScheme: v.PaddingScheme,
+	}
+	network := anyTLSNetwork(v)
+	t := coreConf.TransportProtocol(network)
+	inbound.StreamSetting = &coreConf.StreamConfig{Network: &t}
+	if len(v.NetworkSettings) > 0 {
+		switch network {
+		case "tcp":
+			if err := json.Unmarshal(v.NetworkSettings, &inbound.StreamSetting.TCPSettings); err != nil {
+				return fmt.Errorf("unmarshal tcp settings error: %s", err)
+			}
+		case "ws":
+			if err := json.Unmarshal(v.NetworkSettings, &inbound.StreamSetting.WSSettings); err != nil {
+				return fmt.Errorf("unmarshal ws settings error: %s", err)
+			}
+		case "grpc":
+			if err := json.Unmarshal(v.NetworkSettings, &inbound.StreamSetting.GRPCSettings); err != nil {
+				return fmt.Errorf("unmarshal grpc settings error: %s", err)
+			}
+		case "httpupgrade":
+			if err := json.Unmarshal(v.NetworkSettings, &inbound.StreamSetting.HTTPUPGRADESettings); err != nil {
+				return fmt.Errorf("unmarshal httpupgrade settings error: %s", err)
+			}
+		case "splithttp", "xhttp":
+			if err := json.Unmarshal(v.NetworkSettings, &inbound.StreamSetting.SplitHTTPSettings); err != nil {
+				return fmt.Errorf("unmarshal xhttp settings error: %s", err)
+			}
+		default:
+			return errors.New("the network type is not vail")
+		}
+	}
+	sets, err := json.Marshal(settings)
+	if err != nil {
+		return fmt.Errorf("marshal anytls settings error: %s", err)
+	}
+	inbound.Settings = (*json.RawMessage)(&sets)
+	return nil
 }
 
 func buildHysteria2(nodeInfo *panel.NodeInfo, inbound *coreConf.InboundDetourConfig) error {

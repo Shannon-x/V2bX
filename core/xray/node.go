@@ -191,6 +191,7 @@ func (c *Xray) AddNodeCustomOutbounds(info *panel.NodeInfo, opts *conf.Options) 
 				contextLabel, proto, cfg.AllowedProtocols, proto)
 			return
 		}
+		migrateLegacyFreedomDomainStrategy(outbound)
 		customConfig, err := outbound.Build()
 		if err != nil {
 			log.Errorf("Failed to build custom outbound for %s: %v", contextLabel, err)

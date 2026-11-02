@@ -2,6 +2,13 @@ module github.com/InazumaV/V2bX
 
 go 1.27.3
 
+// Go >= 1.24 makes every Linux listener MPTCP by default. CVE-2026-98432 (Linux
+// TCP use-after-free) was shown to be remotely exploitable through MPTCP
+// listeners. Xray-core already turns MPTCP off on its own listeners; this also
+// covers the sing-box core and V2bX's own listeners. An explicit
+// SetMultipathTCP(true), e.g. sing-box "tcp_multi_path", still takes effect.
+godebug multipathtcp=0
+
 require (
 	github.com/apernet/hysteria/core/v2 v2.13.0
 	github.com/apernet/hysteria/extras/v2 v2.13.0

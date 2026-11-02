@@ -40,15 +40,7 @@ func buildSSUser(tag string, userInfo *panel.UserInfo, cypher string, serverKey 
 			Account: serial.ToTypedMessage(ssAccount),
 		}
 	} else {
-		var keyLength int
-		switch cypher {
-		case "2022-blake3-aes-128-gcm":
-			keyLength = 16
-		case "2022-blake3-aes-256-gcm":
-			keyLength = 32
-		case "2022-blake3-chacha20-poly1305":
-			keyLength = 32
-		}
+		keyLength := ss2022KeyLength(cypher)
 		// W1.4 / audit #36: guard against panel-supplied short UUIDs.
 		if len(userInfo.Uuid) < keyLength {
 			logrus.WithFields(logrus.Fields{
@@ -69,6 +61,15 @@ func buildSSUser(tag string, userInfo *panel.UserInfo, cypher string, serverKey 
 			Account: serial.ToTypedMessage(ssAccount),
 		}
 	}
+}
+
+// ss2022KeyLength returns the PSK length in bytes for a Shadowsocks 2022
+// cipher: 16 for 2022-blake3-aes-128-gcm, 32 for the other 2022 ciphers.
+func ss2022KeyLength(cipher string) int {
+	if strings.EqualFold(cipher, "2022-blake3-aes-128-gcm") {
+		return 16
+	}
+	return 32
 }
 
 func getCipherFromString(c string) shadowsocks.CipherType {

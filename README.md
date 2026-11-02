@@ -15,7 +15,7 @@
 
 ## 特性
 
-- **多协议支持** — Vmess / Vless / Trojan / Shadowsocks / Hysteria / Hysteria2 / TUIC / AnyTLS
+- **多协议支持** — Vmess / Vless / Trojan / Shadowsocks / Hysteria / Hysteria2 / TUIC / AnyTLS（AnyTLS 同时支持 Xray 与 sing-box 内核）
 - **多内核引擎** — 同时支持 Xray、sing-box、Hysteria2 内核，按需选择
 - **多节点对接** — 单实例同时对接多个面板节点，无需重复部署
 - **TLS 证书管理** — 自动申请/续签 TLS 证书（HTTP / DNS / file 模式），多域名证书独立管理
@@ -235,7 +235,7 @@ docker compose up -d
 | `ApiHost` | string | 是 | 面板地址，如 `https://panel.example.com` |
 | `ApiKey` | string | 是 | 面板 API 对接密钥 |
 | `NodeID` | int | 是 | 面板中的节点 ID |
-| `NodeType` | string | 是 | 协议类型：`vmess` / `vless` / `trojan` / `shadowsocks` / `hysteria` / `hysteria2` / `tuic` / `anytls` |
+| `NodeType` | string | 是 | 协议类型：`vmess` / `vless` / `trojan` / `shadowsocks` / `hysteria` / `hysteria2` / `tuic` / `anytls`（Xray 内核支持 vmess / vless / trojan / shadowsocks / hysteria2 / anytls） |
 | `Timeout` | int | 否 | API 请求超时（秒），默认 30 |
 | `ApiVersion` | int | 否 | API 版本：`1` = V1 UniProxy（默认），`2` = V2 Flat API |
 | `ListenIP` | string | 否 | 监听地址，默认 `0.0.0.0`，IPv6 用 `::` |
@@ -267,6 +267,31 @@ docker compose up -d
         "CertDomain": "node1.example.com",
         "CertFile": "/etc/V2bX/node1.example.com.cert.pem",
         "KeyFile": "/etc/V2bX/node1.example.com.key.pem",
+        "Email": "admin@example.com"
+    }
+}
+```
+
+**Xray 内核 AnyTLS 节点：**
+
+`NodeType` 填 `anytls` 即可，和 v2node 的行为一致：用户密码就是面板下发的 UUID，`padding_scheme`
+由面板下发（按行数组），`network` / `network_settings` 留空时走 tcp，也可以由面板指定 ws / grpc /
+httpupgrade / xhttp。AnyTLS 建立在 TLS 之上，`CertConfig.CertMode` 不能是 `none`（安装脚本选择
+AnyTLS 时会强制进入证书配置）。
+
+```json
+{
+    "Core": "xray",
+    "ApiHost": "https://panel.example.com",
+    "ApiKey": "your-api-key",
+    "NodeID": 3,
+    "NodeType": "anytls",
+    "ListenIP": "0.0.0.0",
+    "CertConfig": {
+        "CertMode": "http",
+        "CertDomain": "anytls.example.com",
+        "CertFile": "/etc/V2bX/anytls.example.com.cert.pem",
+        "KeyFile": "/etc/V2bX/anytls.example.com.key.pem",
         "Email": "admin@example.com"
     }
 }

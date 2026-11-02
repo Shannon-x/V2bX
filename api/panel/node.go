@@ -166,6 +166,12 @@ type TuicNode struct {
 type AnyTlsNode struct {
 	CommonNode
 	PaddingScheme []string `json:"padding_scheme,omitempty"`
+	// Xray 内核用：AnyTLS 可以跑在 tcp / ws / grpc / httpupgrade / xhttp 之上，
+	// 字段与 v2node 的 CommonNode 对齐（network / network_settings）。
+	// 为空时视为 tcp。sing-box 内核忽略这两个字段。
+	Network             string          `json:"network"`
+	NetworkSettings     json.RawMessage `json:"network_settings"`
+	NetworkSettingsBack json.RawMessage `json:"networkSettings"`
 }
 
 type HysteriaNode struct {
@@ -344,8 +350,10 @@ func (c *Client) GetNodeInfoCtx(ctx context.Context) (node *NodeInfo, err error)
 			node.Security = Tls
 		case "anytls":
 			node.AnyTls = &AnyTlsNode{
-				CommonNode:    rsp.CommonNode,
-				PaddingScheme: rsp.PaddingScheme,
+				CommonNode:      rsp.CommonNode,
+				PaddingScheme:   rsp.PaddingScheme,
+				Network:         rsp.Network,
+				NetworkSettings: rsp.NetworkSettings,
 			}
 			node.Security = Tls
 		case "hysteria":
@@ -421,6 +429,10 @@ func (c *Client) GetNodeInfoCtx(ctx context.Context) (node *NodeInfo, err error)
 			err = json.Unmarshal(r.Body(), rsp)
 			if err != nil {
 				return nil, fmt.Errorf("decode anytls params error: %s", err)
+			}
+			if len(rsp.NetworkSettingsBack) > 0 {
+				rsp.NetworkSettings = rsp.NetworkSettingsBack
+				rsp.NetworkSettingsBack = nil
 			}
 			cm = &rsp.CommonNode
 			node.AnyTls = rsp

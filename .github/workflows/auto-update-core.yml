@@ -50,6 +50,11 @@ jobs:
           }
           build_ok() {
             go build -o /dev/null -tags "$TAGS" . 2>&1 | tail -20
+            [ "${PIPESTATUS[0]}" -eq 0 ] || return 1
+            # REALITY 握手回归：上游 reality 8cdf7bf 起拒绝不带 X25519MLKEM768 的
+            # ClientHello，sing-box / mihomo 用户会全部连不上，但编译照样能过。
+            # 升级后这组测试不过，就当作「编不过」处理，回滚该内核。
+            go test -count=1 -tags "$TAGS" -run 'TestRealityCompat' ./core/xray/ 2>&1 | tail -30
             return "${PIPESTATUS[0]}"
           }
 

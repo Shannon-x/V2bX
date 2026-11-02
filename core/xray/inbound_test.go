@@ -203,3 +203,90 @@ func TestBuildRealityInboundPreservesExplicitMinimumClientVersion(t *testing.T) 
 		t.Fatalf("MinClientVer = %v, want %v", got, want)
 	}
 }
+
+func buildTestHysteria2Inbound(t *testing.T, option *conf.Options) *proxyman.ReceiverConfig {
+	t.Helper()
+	nodeInfo := &panel.NodeInfo{
+		Type:     "hysteria2",
+		Security: panel.None,
+		Hysteria2: &panel.Hysteria2Node{
+			UpMbps:   100,
+			DownMbps: 100,
+		},
+		Common: &panel.CommonNode{ServerPort: 10087},
+	}
+	ihc, err := buildInbound(option, nodeInfo, "test-hy2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiver, err := ihc.ReceiverSettings.GetInstance()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return receiver.(*proxyman.ReceiverConfig)
+}
+
+// Hysteria2QuicParams from the local config must reach xray's QuicParams
+// without disturbing the panel-driven brutal bandwidth settings.
+func TestBuildHysteria2InboundAppliesLocalQuicParams(t *testing.T) {
+	option := &conf.Options{
+		ListenIP: "0.0.0.0",
+		XrayOptions: &conf.XrayOptions{
+			Hysteria2QuicParams: &conf.XrayHysteria2QuicParams{
+				InitStreamReceiveWindow:     1 << 20,
+				MaxStreamReceiveWindow:      2 << 20,
+				InitConnectionReceiveWindow: 4 << 20,
+				MaxConnectionReceiveWindow:  8 << 20,
+				MaxIdleTimeout:              20,
+				MaxIncomingStreams:          256,
+			},
+		},
+	}
+	rc := buildTestHysteria2Inbound(t, option)
+	qp := rc.StreamSettings.QuicParams
+	if qp == nil {
+		t.Fatal("QuicParams missing from built hysteria2 inbound")
+	}
+	if qp.InitStreamReceiveWindow != 1<<20 || qp.MaxStreamReceiveWindow != 2<<20 ||
+		qp.InitConnReceiveWindow != 4<<20 || qp.MaxConnReceiveWindow != 8<<20 ||
+		qp.MaxIdleTimeout != 20 || qp.MaxIncomingStreams != 256 {
+		t.Fatalf("QuicParams not applied: %+v", qp)
+	}
+	// Panel brutal settings must survive the merge.
+	if qp.Congestion != "force-brutal" || qp.BrutalUp == 0 || qp.BrutalDown == 0 {
+		t.Fatalf("brutal settings lost: %+v", qp)
+	}
+}
+
+// Without the local section the inbound must be byte-for-byte what it was
+// before: xray fills its own defaults, so the window fields stay 0.
+func TestBuildHysteria2InboundWithoutQuicParamsKeepsXrayDefaults(t *testing.T) {
+	option := &conf.Options{ListenIP: "0.0.0.0", XrayOptions: conf.NewXrayOptions()}
+	rc := buildTestHysteria2Inbound(t, option)
+	qp := rc.StreamSettings.QuicParams
+	if qp == nil {
+		t.Fatal("brutal QuicParams expected from panel bandwidth")
+	}
+	if qp.InitStreamReceiveWindow != 0 || qp.MaxIncomingStreams != 0 || qp.MaxIdleTimeout != 0 {
+		t.Fatalf("window fields must stay at xray defaults (0): %+v", qp)
+	}
+	// An empty section is treated exactly like no section.
+	option.XrayOptions.Hysteria2QuicParams = &conf.XrayHysteria2QuicParams{}
+	rc = buildTestHysteria2Inbound(t, option)
+	if rc.StreamSettings.QuicParams.InitStreamReceiveWindow != 0 {
+		t.Fatal("empty Hysteria2QuicParams must not change the inbound")
+	}
+}
+
+// The code defaults are the memory-conscious profile documented in README:
+// identical timeouts to v2node, half its pipe buffer.
+func TestXrayConnectionDefaults(t *testing.T) {
+	cc := conf.NewXrayConfig().ConnectionConfig
+	if cc.Handshake != 4 || cc.ConnIdle != 120 || cc.UplinkOnly != 2 || cc.DownlinkOnly != 4 || cc.BufferSize != 64 {
+		t.Fatalf("unexpected XrayConnectionConfig defaults: %+v", cc)
+	}
+	p := parseConnectionConfig(cc)
+	if *p.BufferSize != 64 || *p.ConnectionIdle != 120 {
+		t.Fatalf("policy not derived from defaults: %+v", p)
+	}
+}

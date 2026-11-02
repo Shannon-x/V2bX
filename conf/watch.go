@@ -101,6 +101,7 @@ func (p *Conf) Watch(filePath, xDnsPath string, sDnsPath string, reload func()) 
 				}
 				p.mu.Lock()
 				p.LogConfig = newConf.LogConfig
+				p.RuntimeConfig = newConf.RuntimeConfig
 				p.CoresConfig = newConf.CoresConfig
 				p.NodeConfig = newConf.NodeConfig
 				p.mu.Unlock()

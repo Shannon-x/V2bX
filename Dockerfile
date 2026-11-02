@@ -1,6 +1,6 @@
 # Build go
 # Xray requires Go 1.27. Keep this in sync with go.mod and release builds.
-FROM golang:1.27.1-alpine AS builder
+FROM golang:1.27.3-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 ENV CGO_ENABLED=0

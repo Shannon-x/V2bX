@@ -24,6 +24,24 @@ type XrayLogConfig struct {
 	Compress   bool `json:"Compress"`   // gzip rotated files
 }
 
+// XrayConnectionConfig maps to xray's level-0 connection policy. These four
+// timeouts and the buffer cap are the single biggest lever on a node's memory
+// footprint, because every value is paid per connection:
+//
+//   - handshake: seconds a connection may sit without completing the proxy
+//     handshake. Half-open / probe connections hold a TLS state + goroutine
+//     stacks for this long.
+//   - connIdle: seconds without traffic in either direction before the
+//     connection is torn down. Clients keep idle keep-alive connections open
+//     for as long as the server allows, so this value directly controls how
+//     many concurrent connections (and therefore how much memory) an idle
+//     user base costs.
+//   - uplinkOnly / downlinkOnly: grace period after one side closes.
+//   - bufferSize: KB that may queue in each direction's internal pipe before
+//     the reader is back-pressured. Throughput is governed by the kernel
+//     socket buffers, not this pipe, so it only needs to cover scheduling
+//     latency between goroutines; large values just let every slow client
+//     pin that much extra memory. 0 queues at most one read, -1 is unlimited.
 type XrayConnectionConfig struct {
 	Handshake    uint32 `json:"handshake"`
 	ConnIdle     uint32 `json:"connIdle"`
@@ -31,6 +49,19 @@ type XrayConnectionConfig struct {
 	DownlinkOnly uint32 `json:"downlinkOnly"`
 	BufferSize   int32  `json:"bufferSize"`
 }
+
+// Defaults for XrayConnectionConfig. handshake / connIdle / uplinkOnly /
+// downlinkOnly match v2node; bufferSize is halved from v2node's 128 KB
+// because measurements with slow readers show the pipe cap is paid in full
+// by every stalled connection while adding nothing to throughput (xray's own
+// default on arm64 is 4 KB).
+const (
+	DefaultXrayHandshake    = 4
+	DefaultXrayConnIdle     = 120
+	DefaultXrayUplinkOnly   = 2
+	DefaultXrayDownlinkOnly = 4
+	DefaultXrayBufferSize   = 64
+)
 
 func NewXrayConfig() *XrayConfig {
 	return &XrayConfig{
@@ -49,11 +80,11 @@ func NewXrayConfig() *XrayConfig {
 		OutboundConfigPath: "",
 		RouteConfigPath:    "",
 		ConnectionConfig: &XrayConnectionConfig{
-			Handshake:    4,
-			ConnIdle:     120,
-			UplinkOnly:   2,
-			DownlinkOnly: 4,
-			BufferSize:   128,
+			Handshake:    DefaultXrayHandshake,
+			ConnIdle:     DefaultXrayConnIdle,
+			UplinkOnly:   DefaultXrayUplinkOnly,
+			DownlinkOnly: DefaultXrayDownlinkOnly,
+			BufferSize:   DefaultXrayBufferSize,
 		},
 	}
 }
@@ -86,6 +117,34 @@ type XrayOptions struct {
 	// firewall the origin to Cloudflare IP ranges and add a CF Transform Rule
 	// setting X-Forwarded-For to cf.connecting_ip. See README.
 	DisableCDNRealIP bool `json:"DisableCDNRealIP"`
+	// Hysteria2QuicParams tunes the QUIC layer of xray-core's hysteria2
+	// inbound (receive windows, idle timeout, stream cap). Every field is
+	// optional and 0 keeps xray's default; see XrayHysteria2QuicParams.
+	Hysteria2QuicParams *XrayHysteria2QuicParams `json:"Hysteria2QuicParams"`
+}
+
+// XrayHysteria2QuicParams exposes the quic-go knobs xray-core accepts for a
+// hysteria2 inbound. xray's defaults (8 MiB per-stream and 20 MiB
+// per-connection receive windows, 1024 streams per connection, 30 s idle)
+// are tuned for throughput on a single big pipe; a node serving many
+// clients on a small VPS can lower the windows to bound how much unread
+// upload data each stream may buffer. Sizes are in bytes and must be at
+// least 16384; timeouts are in seconds (maxIdleTimeout 4–120,
+// keepAlivePeriod 2–60); maxIncomingStreams must be at least 8.
+type XrayHysteria2QuicParams struct {
+	InitStreamReceiveWindow     uint64 `json:"initStreamReceiveWindow"`
+	MaxStreamReceiveWindow      uint64 `json:"maxStreamReceiveWindow"`
+	InitConnectionReceiveWindow uint64 `json:"initConnectionReceiveWindow"`
+	MaxConnectionReceiveWindow  uint64 `json:"maxConnectionReceiveWindow"`
+	MaxIdleTimeout              int64  `json:"maxIdleTimeout"`
+	KeepAlivePeriod             int64  `json:"keepAlivePeriod"`
+	MaxIncomingStreams          int64  `json:"maxIncomingStreams"`
+	DisablePathMTUDiscovery     bool   `json:"disablePathMTUDiscovery"`
+}
+
+// IsZero reports whether no QUIC parameter was configured.
+func (q *XrayHysteria2QuicParams) IsZero() bool {
+	return q == nil || *q == XrayHysteria2QuicParams{}
 }
 
 type FallBackConfigForXray struct {

@@ -3,20 +3,18 @@ package cmd
 import (
 	"os"
 	"os/signal"
-	"runtime"
 	"syscall"
 
 	"github.com/InazumaV/V2bX/conf"
-	vCore "github.com/InazumaV/V2bX/core"
 	"github.com/InazumaV/V2bX/limiter"
-	"github.com/InazumaV/V2bX/node"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
 var (
-	config string
-	watch  bool
+	config      string
+	watch       bool
+	pprofListen string
 )
 
 var serverCommand = cobra.Command{
@@ -34,6 +32,7 @@ func init() {
 		BoolVarP(&watch, "watch", "w",
 			true, "watch file path change")
 	command.AddCommand(&serverCommand)
+	serverCommand.PersistentFlags().StringVar(&pprofListen, "pprof-listen", "", "opt-in diagnostics on a loopback IP, e.g. 127.0.0.1:6060")
 }
 
 func serverHandle(_ *cobra.Command, _ []string) {
@@ -63,6 +62,11 @@ func serverHandle(_ *cobra.Command, _ []string) {
 			log.SetOutput(logFile)
 		}
 	}
+	defer func() {
+		if logFile != nil {
+			logFile.Close()
+		}
+	}()
 	// Validate configuration
 	if warnings := c.Validate(); len(warnings) > 0 {
 		for _, w := range warnings {
@@ -70,73 +74,67 @@ func serverHandle(_ *cobra.Command, _ []string) {
 		}
 	}
 	limiter.Init()
+	diagnostics, err := startDiagnostics(pprofListen)
+	if err != nil {
+		log.WithError(err).Error("Start diagnostics failed")
+		return
+	}
+	if diagnostics != nil {
+		defer diagnostics.Close()
+	}
 	log.Info("Start V2bX...")
-	vc, err := vCore.NewCore(c.CoresConfig)
+	lastGood := snapshotRuntimeConfig(c)
+	active, err := newServerRuntime(lastGood)
 	if err != nil {
-		log.WithField("err", err).Error("new core failed")
+		log.WithError(err).Error("Build core failed")
 		return
 	}
-	err = vc.Start()
-	if err != nil {
-		log.WithField("err", err).Error("Start core failed")
+	if err := active.Start(); err != nil {
+		active.Close()
+		log.WithError(err).Error("Start nodes failed")
 		return
 	}
-	defer vc.Close()
-	log.Info("Core ", vc.Type(), " started")
-	nodes := node.New()
-	err = nodes.Start(c.NodeConfig, vc)
-	if err != nil {
-		log.WithField("err", err).Error("Run nodes failed")
-		return
-	}
+	// StopWatch waits for any in-flight reload before closing the most recent
+	// instance. A direct defer active.Close() would capture the initial one.
+	defer func() {
+		c.StopWatch()
+		if active != nil {
+			active.Close()
+		}
+	}()
 	log.Info("Nodes started")
 	xdns := os.Getenv("XRAY_DNS_PATH")
 	sdns := os.Getenv("SING_DNS_PATH")
 	if watch {
 		err = c.Watch(config, xdns, sdns, func() {
-			nodes.Close()
-			err = vc.Close()
-			if err != nil {
-				log.WithField("err", err).Error("Restart node failed")
-				return
+			desired := snapshotRuntimeConfig(c)
+			var applied bool
+			var reloadErr error
+			active, applied, reloadErr = replaceRuntime(active,
+				func() error { return validateRuntimeConfig(desired) },
+				func() (managedRuntime, error) { return newServerRuntime(desired) },
+				func() (managedRuntime, error) { return newServerRuntime(lastGood) })
+			if applied {
+				lastGood = desired
 			}
-			vc, err = vCore.NewCore(c.CoresConfig)
-			if err != nil {
-				log.WithField("err", err).Error("New core failed")
-				return
+			if reloadErr != nil {
+				log.WithFields(log.Fields{"err": reloadErr, "serving": active != nil, "applied": applied}).Error("Configuration reload encountered an error")
+			} else {
+				log.Info("Configuration reloaded")
 			}
-			err = vc.Start()
-			if err != nil {
-				log.WithField("err", err).Error("Start core failed")
-				return
-			}
-			log.Info("Core ", vc.Type(), " restarted")
-			err = nodes.Start(c.NodeConfig, vc)
-			if err != nil {
-				log.WithField("err", err).Error("Run nodes failed")
-				return
-			}
-			log.Info("Nodes restarted")
-			runtime.GC()
 		})
 		if err != nil {
-			log.WithField("err", err).Error("start watch failed")
+			log.WithError(err).Error("Start config watch failed")
 			return
 		}
 	}
-	// clear memory
-	runtime.GC()
 	// wait exit signal
 	{
 		osSignals := make(chan os.Signal, 1)
 		signal.Notify(osSignals, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(osSignals)
 		<-osSignals
 	}
 	// graceful shutdown
 	log.Info("Shutting down...")
-	c.StopWatch()
-	nodes.Close()
-	if logFile != nil {
-		logFile.Close()
-	}
 }

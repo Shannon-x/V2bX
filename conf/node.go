@@ -150,14 +150,16 @@ type rawNodeConfig struct {
 }
 
 type ApiConfig struct {
-	APIHost      string `json:"ApiHost"`
-	APISendIP    string `json:"ApiSendIP"`
-	NodeID       int    `json:"NodeID"`
-	Key          string `json:"ApiKey"`
-	NodeType     string `json:"NodeType"`
-	Timeout      int    `json:"Timeout"`
-	RuleListPath string `json:"RuleListPath"`
-	ApiVersion   int    `json:"ApiVersion"` // 1 = V1 UniProxy (default), 2 = V2 flat API (for Shannon-x/v2board ServerV2node)
+	MaxResponseBodyBytes int64  `json:"MaxResponseBodyBytes"` // zero: 64 MiB after HTTP decompression
+	MaxUsers             int    `json:"MaxUsers"`             // zero: 500,000 per node snapshot
+	APIHost              string `json:"ApiHost"`
+	APISendIP            string `json:"ApiSendIP"`
+	NodeID               int    `json:"NodeID"`
+	Key                  string `json:"ApiKey"`
+	NodeType             string `json:"NodeType"`
+	Timeout              int    `json:"Timeout"`
+	RuleListPath         string `json:"RuleListPath"`
+	ApiVersion           int    `json:"ApiVersion"` // 1 = V1 UniProxy (default), 2 = V2 flat API (for Shannon-x/v2board ServerV2node)
 }
 
 func (n *NodeConfig) UnmarshalJSON(data []byte) (err error) {
@@ -239,19 +241,19 @@ func (n *NodeConfig) UnmarshalJSON(data []byte) (err error) {
 }
 
 type Options struct {
-	Name                   string                `json:"Name"`
-	Core                   string                `json:"Core"`
-	CoreName               string                `json:"CoreName"`
-	ListenIP               string                `json:"ListenIP"`
-	SendIP                 string                `json:"SendIP"`
-	DeviceOnlineMinTraffic int64                 `json:"DeviceOnlineMinTraffic"`
-	ReportMinTraffic       int64                 `json:"ReportMinTraffic"`
-	LimitConfig            LimitConfig           `json:"LimitConfig"`
-	RawOptions             json.RawMessage       `json:"RawOptions"`
-	XrayOptions            *XrayOptions          `json:"XrayOptions"`
-	SingOptions            *SingOptions          `json:"SingOptions"`
-	Hysteria2ConfigPath    string                `json:"Hysteria2ConfigPath"`
-	CertConfig             *CertConfig           `json:"CertConfig"`
+	Name                   string          `json:"Name"`
+	Core                   string          `json:"Core"`
+	CoreName               string          `json:"CoreName"`
+	ListenIP               string          `json:"ListenIP"`
+	SendIP                 string          `json:"SendIP"`
+	DeviceOnlineMinTraffic int64           `json:"DeviceOnlineMinTraffic"`
+	ReportMinTraffic       int64           `json:"ReportMinTraffic"`
+	LimitConfig            LimitConfig     `json:"LimitConfig"`
+	RawOptions             json.RawMessage `json:"RawOptions"`
+	XrayOptions            *XrayOptions    `json:"XrayOptions"`
+	SingOptions            *SingOptions    `json:"SingOptions"`
+	Hysteria2ConfigPath    string          `json:"Hysteria2ConfigPath"`
+	CertConfig             *CertConfig     `json:"CertConfig"`
 	// W6 / audit #8: opt-in widening of the panel-pushed custom-outbound
 	// trust boundary. Nil / unset → safe default (whitelist freedom +
 	// blackhole). See CustomOutboundConfig docs for the rationale and the

@@ -3,14 +3,11 @@ package panel
 import (
 	"context"
 	"fmt"
-	"io"
 	"strings"
 
-	"encoding/json/jsontext"
 	"encoding/json/v2"
 
 	"github.com/sirupsen/logrus"
-	"github.com/vmihailenco/msgpack/v5"
 )
 
 type OnlineUser struct {
@@ -48,59 +45,37 @@ func (c *Client) GetUserListCtx(ctx context.Context) ([]UserInfo, error) {
 		SetHeader("X-Response-Format", "msgpack").
 		SetDoNotParseResponse(true).
 		Get(path)
+	if err != nil {
+		if r != nil && r.RawResponse != nil {
+			r.RawResponse.Body.Close()
+		}
+		return nil, fmt.Errorf("get user list: %w", err)
+	}
 	if r == nil || r.RawResponse == nil {
 		return nil, fmt.Errorf("received nil response or raw response")
 	}
-	defer func() {
-		io.Copy(io.Discard, r.RawResponse.Body)
-		r.RawResponse.Body.Close()
-	}()
-
+	defer r.RawResponse.Body.Close()
 	if r.StatusCode() == 304 {
 		return nil, nil
 	}
-
-	if err = c.checkResponse(r, path, err); err != nil {
+	if err := c.checkResponse(r, path, nil); err != nil {
 		return nil, err
 	}
-	userlist := &UserListBody{}
+	maxUsers := c.maxUsers
+	if maxUsers == 0 {
+		maxUsers = 500000
+	}
+	var users []UserInfo
 	if strings.Contains(r.Header().Get("Content-Type"), "application/x-msgpack") {
-		decoder := msgpack.NewDecoder(r.RawResponse.Body)
-		if err := decoder.Decode(userlist); err != nil {
-			return nil, fmt.Errorf("decode user list error: %w", err)
-		}
+		users, err = decodeMsgpackUsers(r.RawResponse.Body, maxUsers)
 	} else {
-		dec := jsontext.NewDecoder(r.RawResponse.Body)
-		for {
-			tok, err := dec.ReadToken()
-			if err != nil {
-				return nil, fmt.Errorf("decode user list error: %w", err)
-			}
-			if tok.Kind() == '"' && tok.String() == "users" {
-				break
-			}
-		}
-		tok, err := dec.ReadToken()
-		if err != nil {
-			return nil, fmt.Errorf("decode user list error: %w", err)
-		}
-		if tok.Kind() != '[' {
-			return nil, fmt.Errorf(`decode user list error: expected "users" array`)
-		}
-		for dec.PeekKind() != ']' {
-			val, err := dec.ReadValue()
-			if err != nil {
-				return nil, fmt.Errorf("decode user list error: read user object: %w", err)
-			}
-			var u UserInfo
-			if err := json.Unmarshal(val, &u); err != nil {
-				return nil, fmt.Errorf("decode user list error: unmarshal user error: %w", err)
-			}
-			userlist.Users = append(userlist.Users, u)
-		}
+		users, err = decodeJSONUsers(r.RawResponse.Body, maxUsers)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("decode user list: %w", err)
 	}
 	c.userEtag = r.Header().Get("ETag")
-	return userlist.Users, nil
+	return users, nil
 }
 
 // GetUserAlive will fetch the alive_ip count for users.

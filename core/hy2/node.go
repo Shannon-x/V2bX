@@ -1,6 +1,8 @@
 package hy2
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/InazumaV/V2bX/api/panel"
@@ -16,9 +18,20 @@ type Hysteria2node struct {
 	Logger        *zap.Logger
 	EventLogger   server.EventLogger
 	TrafficLogger server.TrafficLogger
+	serveDone     <-chan struct{}
 }
 
 func (h *Hysteria2) AddNode(tag string, info *panel.NodeInfo, config *conf.Options) error {
+	h.nodesMu.RLock()
+	closed := h.closed
+	_, exists := h.Hy2nodes[tag]
+	h.nodesMu.RUnlock()
+	if closed {
+		return fmt.Errorf("hysteria2 core is closed")
+	}
+	if exists {
+		return fmt.Errorf("hysteria2 node %q already exists", tag)
+	}
 	var err error
 	hyconfig := &server.Config{}
 	var c serverConfig
@@ -26,10 +39,10 @@ func (h *Hysteria2) AddNode(tag string, info *panel.NodeInfo, config *conf.Optio
 	if len(config.Hysteria2ConfigPath) != 0 {
 		v.SetConfigFile(config.Hysteria2ConfigPath)
 		if err := v.ReadInConfig(); err != nil {
-			h.Logger.Fatal("failed to read server config", zap.Error(err))
+			return fmt.Errorf("read hysteria2 server config: %w", err)
 		}
 		if err := v.Unmarshal(&c); err != nil {
-			h.Logger.Fatal("failed to parse server config", zap.Error(err))
+			return fmt.Errorf("parse hysteria2 server config: %w", err)
 		}
 	}
 	hook := &HookServer{
@@ -59,14 +72,25 @@ func (h *Hysteria2) AddNode(tag string, info *panel.NodeInfo, config *conf.Optio
 	hyconfig.Authenticator = h.Auth
 	s, err := server.NewServer(hyconfig)
 	if err != nil {
-		return err
+		return errors.Join(err, closeUnstartedConfig(hyconfig))
 	}
 	n.Hy2server = s
+	done := make(chan struct{})
+	n.serveDone = done
 	// W2.1: nodesMu protects Hy2nodes against concurrent Range / DelNode.
 	h.nodesMu.Lock()
+	if h.closed {
+		h.nodesMu.Unlock()
+		return errors.Join(fmt.Errorf("hysteria2 core is closed"), s.Close())
+	}
+	if _, exists := h.Hy2nodes[tag]; exists {
+		h.nodesMu.Unlock()
+		return errors.Join(fmt.Errorf("hysteria2 node %q already exists", tag), s.Close())
+	}
 	h.Hy2nodes[tag] = n
 	h.nodesMu.Unlock()
 	go func() {
+		defer close(done)
 		if err := s.Serve(); err != nil {
 			if !strings.Contains(err.Error(), "quic: server closed") {
 				h.Logger.Error("Server Error", zap.Error(err))
@@ -88,12 +112,17 @@ func (h *Hysteria2) DelNode(tag string) error {
 	if !ok {
 		return nil
 	}
-	// 清理 HookServer 中的流量计数器
+	return node.close()
+}
+
+func (node *Hysteria2node) close() error {
+	err := node.Hy2server.Close()
+	if node.serveDone != nil {
+		<-node.serveDone
+	}
+	// Release counters after the listener has stopped accepting work.
 	if hook, ok := node.TrafficLogger.(*HookServer); ok {
-		hook.Counter.Delete(tag)
+		hook.Counter.Delete(node.Tag)
 	}
-	if err := node.Hy2server.Close(); err != nil {
-		return err
-	}
-	return nil
+	return err
 }

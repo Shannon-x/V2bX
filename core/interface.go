@@ -11,6 +11,34 @@ type AddUsersParams struct {
 	*panel.NodeInfo
 }
 
+// UpdateUsersParams carries one authoritative snapshot and its incremental diff.
+// Cores without UserUpdater retain their existing add/delete semantics.
+type UpdateUsersParams struct {
+	AddUsersParams
+	Added   []panel.UserInfo
+	Deleted []panel.UserInfo
+}
+
+type UserUpdater interface {
+	UpdateUsers(*UpdateUsersParams) error
+}
+
+func ApplyUserUpdate(c Core, p *UpdateUsersParams) error {
+	if updater, ok := c.(UserUpdater); ok {
+		return updater.UpdateUsers(p)
+	}
+	if len(p.Deleted) > 0 {
+		if err := c.DelUsers(p.Deleted, p.Tag, p.NodeInfo); err != nil {
+			return err
+		}
+	}
+	if len(p.Added) > 0 {
+		_, err := c.AddUsers(&AddUsersParams{Tag: p.Tag, NodeInfo: p.NodeInfo, Users: p.Added})
+		return err
+	}
+	return nil
+}
+
 type Core interface {
 	Start() error
 	Close() error

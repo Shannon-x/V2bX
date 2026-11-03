@@ -16,9 +16,10 @@ type Conf struct {
 	CoresConfig []CoreConfig `json:"Cores"`
 	NodeConfig  []NodeConfig `json:"Nodes"`
 
-	mu          sync.RWMutex  `json:"-"`
-	watcherMu   sync.Mutex    `json:"-"`
-	watcherDone chan struct{} `json:"-"`
+	mu            sync.RWMutex  `json:"-"`
+	watcherMu     sync.Mutex    `json:"-"`
+	watcherDone   chan struct{} `json:"-"`
+	watcherExited chan struct{} `json:"-"`
 }
 
 func New() *Conf {

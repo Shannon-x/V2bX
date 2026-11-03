@@ -71,6 +71,16 @@ type LinkManager struct {
 	mu    sync.RWMutex
 }
 
+// Both dispatch entry points share the allocation-free cached path.
+func (d *DefaultDispatcher) getLinkManager(email string) *LinkManager {
+	if v, ok := d.LinkManagers.Load(email); ok {
+		return v.(*LinkManager)
+	}
+	candidate := &LinkManager{links: make(map[*ManagedWriter]buf.Reader)}
+	v, _ := d.LinkManagers.LoadOrStore(email, candidate)
+	return v.(*LinkManager)
+}
+
 func (m *LinkManager) AddLink(writer *ManagedWriter, reader buf.Reader) {
 	if m == nil {
 		return

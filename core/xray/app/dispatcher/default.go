@@ -41,7 +41,7 @@ type cachedReader struct {
 
 func (r *cachedReader) Cache(b *buf.Buffer, deadline time.Duration) error {
 	mb, err := r.reader.ReadMultiBufferTimeout(deadline)
-	if err != nil {
+	if err != nil && mb.IsEmpty() {
 		return err
 	}
 	r.Lock()
@@ -53,7 +53,7 @@ func (r *cachedReader) Cache(b *buf.Buffer, deadline time.Duration) error {
 	n := r.cache.Copy(rawBytes)
 	b.Resize(0, int32(n))
 	r.Unlock()
-	return nil
+	return err
 }
 
 func (r *cachedReader) readInternal() buf.MultiBuffer {
@@ -192,19 +192,7 @@ func (d *DefaultDispatcher) getLink(ctx context.Context, network net.Network) (*
 			common.Interrupt(inboundLink.Reader)
 			return nil, nil, nil, errors.New("Limited ", user.Email, " by conn or ip")
 		}
-		// W2.5 / W6 / audit #1 #29 #39 / B1: Load-first fast path; only
-		// alloc a fresh LinkManager{links: make(map[...])} on cold miss.
-		// Previous LoadOrStore always allocated and discarded on hit (each
-		// hit threw one map + one struct at GC).
-		var lm *LinkManager
-		if v, ok := d.LinkManagers.Load(user.Email); ok {
-			lm = v.(*LinkManager)
-		} else {
-			lmActual, _ := d.LinkManagers.LoadOrStore(user.Email, &LinkManager{
-				links: make(map[*ManagedWriter]buf.Reader),
-			})
-			lm = lmActual.(*LinkManager)
-		}
+		lm := d.getLinkManager(user.Email)
 		managedWriter := newManagedWriter(uplinkWriter, lm)
 		lm.AddLink(managedWriter, outboundLink.Reader)
 		inboundLink.Writer = managedWriter
@@ -223,22 +211,15 @@ func (d *DefaultDispatcher) getLink(ctx context.Context, network net.Network) (*
 		}
 
 		ts := t.GetCounter(user.Email)
-		upcounter := &counter.XrayTrafficCounter{V: &ts.UpCounter}
-		downcounter := &counter.XrayTrafficCounter{V: &ts.DownCounter}
-		// W6 / B3: wire the dirty-marker so this user shows up in the
-		// next IterateDirty without GetUserTrafficSlice having to Range
-		// the full Counters map.
+		upcounter := &counter.XrayTrafficCounter{V: &ts.UpCounter, Storage: ts}
+		downcounter := &counter.XrayTrafficCounter{V: &ts.DownCounter, Storage: ts}
 		inboundLink.Writer = &SizeStatWriter{
 			Counter: upcounter,
 			Writer:  inboundLink.Writer,
-			Parent:  t,
-			UUID:    user.Email,
 		}
 		outboundLink.Writer = &SizeStatWriter{
 			Counter: downcounter,
 			Writer:  outboundLink.Writer,
-			Parent:  t,
-			UUID:    user.Email,
 		}
 	}
 
@@ -388,11 +369,7 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 			common.Interrupt(outbound.Reader)
 			return errors.New("Limited ", user.Email, " by conn or ip")
 		}
-		// W2.5 / audit #1 #29 #39: same LoadOrStore fix as in getLink.
-		lmActual, _ := d.LinkManagers.LoadOrStore(user.Email, &LinkManager{
-			links: make(map[*ManagedWriter]buf.Reader),
-		})
-		lm := lmActual.(*LinkManager)
+		lm := d.getLinkManager(user.Email)
 		managedWriter := newManagedWriter(outbound.Writer, lm)
 		outbound.Writer = managedWriter
 		if w != nil {
@@ -409,20 +386,16 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 		}
 
 		ts := t.GetCounter(user.Email)
-		downcounter := &counter.XrayTrafficCounter{V: &ts.DownCounter}
-		// W6 / B3: dirty-marker wiring (see getLink for rationale).
+		downcounter := &counter.XrayTrafficCounter{V: &ts.DownCounter, Storage: ts}
 		outbound.Reader = &CounterReader{
 			Reader:  &buf.TimeoutWrapperReader{Reader: outbound.Reader},
 			Counter: &ts.UpCounter,
-			Parent:  t,
-			UUID:    user.Email,
+			Storage: ts,
 		}
 		lm.AddLink(managedWriter, outbound.Reader)
 		outbound.Writer = &SizeStatWriter{
 			Counter: downcounter,
 			Writer:  outbound.Writer,
-			Parent:  t,
-			UUID:    user.Email,
 		}
 	}
 
@@ -483,9 +456,9 @@ func sniffer(ctx context.Context, cReader *cachedReader, metadataOnly bool, netw
 				return nil, ctx.Err()
 			default:
 				cachingStartingTimeStamp := time.Now()
-				err := cReader.Cache(payload, cacheDeadline)
-				if err != nil {
-					return nil, err
+				cacheErr := cReader.Cache(payload, cacheDeadline)
+				if cacheErr != nil && payload.IsEmpty() {
+					return nil, cacheErr
 				}
 				cachingTimeElapsed := time.Since(cachingStartingTimeStamp)
 				cacheDeadline -= cachingTimeElapsed
@@ -502,6 +475,11 @@ func sniffer(ctx context.Context, cReader *cachedReader, metadataOnly bool, netw
 					}
 				} else {
 					totalAttempt++
+				}
+				// A reader can return its final bytes together with EOF. Sniff
+				// those bytes before handling the error, but never retry the read.
+				if cacheErr != nil {
+					return nil, cacheErr
 				}
 				if totalAttempt >= 2 || cacheDeadline <= 0 {
 					return nil, errSniffingTimeout
@@ -543,35 +521,38 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 				destIP = destination.Address.IP().String()
 				destStr = destIP
 			}
-			// Block domain rules
-			if l.CheckDomainRule(destStr) {
-				errors.LogError(ctx, fmt.Sprintf(
-					"User %s access domain %s reject by rule",
-					sessionInbound.User.Email,
-					destStr))
-				common.Close(link.Writer)
-				common.Interrupt(link.Reader)
-				return
-			}
-			// Block IP rules
-			if destIP != "" && l.CheckIPRule(destIP) {
-				errors.LogError(ctx, fmt.Sprintf(
-					"User %s access IP %s reject by rule",
-					sessionInbound.User.Email,
-					destIP))
-				common.Close(link.Writer)
-				common.Interrupt(link.Reader)
-				return
-			}
-			// Block port rules
-			if l.CheckPortRule(int(destination.Port)) {
-				errors.LogError(ctx, fmt.Sprintf(
-					"User %s access port %d reject by rule",
-					sessionInbound.User.Email,
-					destination.Port))
-				common.Close(link.Writer)
-				common.Interrupt(link.Reader)
-				return
+			// Most nodes have no panel block rules. Avoid three rule locks then.
+			if l.HasBlockRules() {
+				// Block domain rules
+				if l.CheckDomainRule(destStr) {
+					errors.LogError(ctx, fmt.Sprintf(
+						"User %s access domain %s reject by rule",
+						sessionInbound.User.Email,
+						destStr))
+					common.Close(link.Writer)
+					common.Interrupt(link.Reader)
+					return
+				}
+				// Block IP rules
+				if destIP != "" && l.CheckIPRule(destIP) {
+					errors.LogError(ctx, fmt.Sprintf(
+						"User %s access IP %s reject by rule",
+						sessionInbound.User.Email,
+						destIP))
+					common.Close(link.Writer)
+					common.Interrupt(link.Reader)
+					return
+				}
+				// Block port rules
+				if l.CheckPortRule(int(destination.Port)) {
+					errors.LogError(ctx, fmt.Sprintf(
+						"User %s access port %d reject by rule",
+						sessionInbound.User.Email,
+						destination.Port))
+					common.Close(link.Writer)
+					common.Interrupt(link.Reader)
+					return
+				}
 			}
 			// Protocol rules
 			if len(protocol) != 0 {

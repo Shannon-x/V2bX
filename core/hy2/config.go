@@ -2,6 +2,7 @@ package hy2
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -15,7 +16,6 @@ import (
 	"github.com/InazumaV/V2bX/conf"
 	"github.com/apernet/hysteria/core/v2/server"
 	"github.com/apernet/hysteria/extras/v2/correctnet"
-	"github.com/apernet/hysteria/extras/v2/masq"
 	"github.com/apernet/hysteria/extras/v2/obfs"
 	"github.com/apernet/hysteria/extras/v2/outbounds"
 	"github.com/apernet/hysteria/extras/v2/sniff"
@@ -55,7 +55,7 @@ const (
 	defaultUDPIdleTimeout      = 60 * time.Second
 )
 
-func (n *Hysteria2node) getTLSConfig(config *conf.Options) (*server.TLSConfig, error) {
+func (n *Hysteria2node) getTLSConfig(config *conf.Options, resources *nodeResources) (*server.TLSConfig, error) {
 	if config.CertConfig == nil {
 		return nil, fmt.Errorf("the CertConfig is not vail")
 	}
@@ -63,18 +63,14 @@ func (n *Hysteria2node) getTLSConfig(config *conf.Options) (*server.TLSConfig, e
 	case "none", "":
 		return nil, fmt.Errorf("the CertMode cannot be none")
 	default:
-		var certs []tls.Certificate
-		cert, err := tls.LoadX509KeyPair(config.CertConfig.CertFile, config.CertConfig.KeyFile)
+		cache, err := newCertificateCache(config.CertConfig.CertFile, config.CertConfig.KeyFile, certificateRefreshInterval, n.Logger)
 		if err != nil {
 			return nil, err
 		}
-		certs = append(certs, cert)
+		resources.add(cache)
 		return &server.TLSConfig{
-			Certificates: certs,
-			GetCertificate: func(tlsinfo *tls.ClientHelloInfo) (*tls.Certificate, error) {
-				cert, err := tls.LoadX509KeyPair(config.CertConfig.CertFile, config.CertConfig.KeyFile)
-				return &cert, err
-			},
+			// Leave Certificates empty so no-SNI handshakes also use the cache.
+			GetCertificate: cache.getCertificate,
 		}, nil
 	}
 }
@@ -146,8 +142,14 @@ func (n *Hysteria2node) getConn(info *panel.NodeInfo, config *conf.Options) (net
 		return conn, nil
 	case "salamander":
 		// hysteria v2.8+ merged obfuscator construction and conn wrapping into a single call.
-		return obfs.WrapPacketConnSalamander(conn, []byte(info.Hysteria2.ObfsPassword))
+		wrapped, err := obfs.WrapPacketConnSalamander(conn, []byte(info.Hysteria2.ObfsPassword))
+		if err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		return wrapped, nil
 	default:
+		_ = conn.Close()
 		return nil, fmt.Errorf("unsupported obfuscation type")
 	}
 }
@@ -294,7 +296,7 @@ func (n *Hysteria2node) getOutboundConfig(c *serverConfig) (server.Outbound, err
 	return Outbound, nil
 }
 
-func (n *Hysteria2node) getMasqHandler(tlsconfig *server.TLSConfig, conn net.PacketConn, c *serverConfig) (http.Handler, error) {
+func (n *Hysteria2node) getMasqHandler(tlsconfig *server.TLSConfig, conn net.PacketConn, c *serverConfig, resources *nodeResources) (http.Handler, error) {
 	var handler http.Handler
 	switch strings.ToLower(c.Masquerade.Type) {
 	case "", "404":
@@ -362,27 +364,31 @@ func (n *Hysteria2node) getMasqHandler(tlsconfig *server.TLSConfig, conn net.Pac
 	MasqHandler := &masqHandlerLogWrapper{H: handler, QUIC: true, Logger: n.Logger}
 
 	if c.Masquerade.ListenHTTP != "" || c.Masquerade.ListenHTTPS != "" {
-		if c.Masquerade.ListenHTTP != "" && c.Masquerade.ListenHTTPS == "" {
-			return nil, fmt.Errorf("masquerade.listenHTTPS having only HTTP server without HTTPS is not supported")
+		tcpTLS := &tls.Config{
+			Certificates:   tlsconfig.Certificates,
+			GetCertificate: tlsconfig.GetCertificate,
 		}
-		s := masq.MasqTCPServer{
-			QUICPort:  extractPortFromAddr(conn.LocalAddr().String()),
-			HTTPSPort: extractPortFromAddr(c.Masquerade.ListenHTTPS),
-			Handler:   &masqHandlerLogWrapper{H: handler, QUIC: false, Logger: n.Logger},
-			TLSConfig: &tls.Config{
-				Certificates:   tlsconfig.Certificates,
-				GetCertificate: tlsconfig.GetCertificate,
-			},
-			ForceHTTPS: c.Masquerade.ForceHTTPS,
+		tcpHandler := &masqHandlerLogWrapper{H: handler, QUIC: false, Logger: n.Logger}
+		if err := startMasqueradeServers(&c.Masquerade, tcpTLS, extractPortFromAddr(conn.LocalAddr().String()), tcpHandler, resources, n.Logger); err != nil {
+			return nil, err
 		}
-		go runMasqTCPServer(&s, c.Masquerade.ListenHTTP, c.Masquerade.ListenHTTPS, n.Logger)
 	}
 
 	return MasqHandler, nil
 }
 
-func (n *Hysteria2node) getHyConfig(info *panel.NodeInfo, config *conf.Options, c *serverConfig) (*server.Config, error) {
-	tls, err := n.getTLSConfig(config)
+func (n *Hysteria2node) getHyConfig(info *panel.NodeInfo, config *conf.Options, c *serverConfig) (result *server.Config, err error) {
+	resources := &nodeResources{}
+	var conn net.PacketConn
+	defer func() {
+		if result == nil {
+			if conn != nil {
+				err = errors.Join(err, ignoreClosed(conn.Close()))
+			}
+			err = errors.Join(err, resources.Close())
+		}
+	}()
+	tls, err := n.getTLSConfig(config, resources)
 	if err != nil {
 		return nil, err
 	}
@@ -390,7 +396,7 @@ func (n *Hysteria2node) getHyConfig(info *panel.NodeInfo, config *conf.Options, 
 	if err != nil {
 		return nil, err
 	}
-	conn, err := n.getConn(info, config)
+	conn, err = n.getConn(info, config)
 	if err != nil {
 		return nil, err
 	}
@@ -406,7 +412,7 @@ func (n *Hysteria2node) getHyConfig(info *panel.NodeInfo, config *conf.Options, 
 	// BT 报文识别放在 RequestHook 的 UDP 首包上。详见 rule_enforce.go。
 	Outbound = newRuleOutbound(n.Tag, Outbound, n.Logger)
 	sniff = newBTRequestHook(n.Tag, sniff, n.Logger)
-	Masq, err := n.getMasqHandler(tls, conn, c)
+	Masq, err := n.getMasqHandler(tls, conn, c, resources)
 	if err != nil {
 		return nil, err
 	}
@@ -414,6 +420,7 @@ func (n *Hysteria2node) getHyConfig(info *panel.NodeInfo, config *conf.Options, 
 		TLSConfig:             *tls,
 		QUICConfig:            *quic,
 		Conn:                  conn,
+		Cleanup:               resources,
 		RequestHook:           sniff,
 		Outbound:              Outbound,
 		BandwidthConfig:       *n.getBandwidthConfig(info),
@@ -424,26 +431,6 @@ func (n *Hysteria2node) getHyConfig(info *panel.NodeInfo, config *conf.Options, 
 		TrafficLogger:         n.TrafficLogger,
 		MasqHandler:           Masq,
 	}, nil
-}
-
-func runMasqTCPServer(s *masq.MasqTCPServer, httpAddr, httpsAddr string, logger *zap.Logger) {
-	errChan := make(chan error, 2)
-	if httpAddr != "" {
-		go func() {
-			logger.Info("masquerade HTTP server up and running", zap.String("listen", httpAddr))
-			errChan <- s.ListenAndServeHTTP(httpAddr)
-		}()
-	}
-	if httpsAddr != "" {
-		go func() {
-			logger.Info("masquerade HTTPS server up and running", zap.String("listen", httpsAddr))
-			errChan <- s.ListenAndServeHTTPS(httpsAddr)
-		}()
-	}
-	err := <-errChan
-	if err != nil {
-		logger.Fatal("failed to serve masquerade HTTP(S)", zap.Error(err))
-	}
 }
 
 func extractPortFromAddr(addr string) int {

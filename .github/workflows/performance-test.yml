@@ -1,0 +1,95 @@
+name: Performance branch test build
+
+on:
+  push:
+    branches: [codex/perf-soga-comparison]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-test-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOEXPERIMENT: jsonv2
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Isolate legacy external integration tests
+        # lego_test.go connects to the production ACME directory from init().
+        # node_test.go assumes a real panel on localhost:80. Keep both source
+        # files intact and run all self-contained tests, including new regressions.
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['GITHUB_WORKSPACE']).resolve()
+          temp = Path(os.environ['RUNNER_TEMP']).resolve() / 'v2bx-tests'
+          temp.mkdir(exist_ok=True)
+          replacements = {}
+          for source, package in [('node/lego_test.go', 'node'), ('api/panel/node_test.go', 'panel')]:
+              target = temp / (package + '_external_test.go')
+              target.write_text('package ' + package + '\n')
+              replacements[str(root / source)] = str(target)
+          (temp / 'overlay.json').write_text(json.dumps({'Replace': replacements}))
+          PY
+      - name: Unit and regression tests
+        run: go test -overlay "$RUNNER_TEMP/v2bx-tests/overlay.json" ./...
+      - name: Race tests
+        run: go test -race -overlay "$RUNNER_TEMP/v2bx-tests/overlay.json" ./...
+      - name: Static checks
+        run: |
+          go vet -overlay "$RUNNER_TEMP/v2bx-tests/overlay.json" ./...
+          bash -n V2bX-script-master/V2bX.sh V2bX-script-master/initconfig.sh
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    env:
+      GOOS: linux
+      GOARCH: ${{ matrix.arch }}
+      CGO_ENABLED: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build test binary
+        run: |
+          mkdir -p package artifacts
+          version="perf-test-${GITHUB_SHA:0:12}"
+          go build -trimpath -tags 'sing xray hysteria2 with_quic with_grpc with_utls with_wireguard with_acme with_gvisor' \
+            -ldflags "-X github.com/InazumaV/V2bX/cmd.version=$version -s -w -buildid=" \
+            -o package/V2bX .
+          file package/V2bX
+          if [ "$GOARCH" = amd64 ]; then
+            package/V2bX version
+          fi
+          cp LICENSE docs/PERFORMANCE.md package/
+          printf 'Version: %s\nCommit: %s\nBranch: %s\nTarget: linux/%s\n' \
+            "$version" "$GITHUB_SHA" "$GITHUB_REF_NAME" "$GOARCH" > package/BUILD-INFO.txt
+          archive="V2bX-linux-${GOARCH}-${version}.tar.gz"
+          tar -czf "artifacts/$archive" -C package .
+          cd artifacts
+          sha256sum "$archive" > "$archive.sha256"
+      - name: Upload test package
+        uses: actions/upload-artifact@v4
+        with:
+          name: V2bX-linux-${{ matrix.arch }}-perf-test
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14

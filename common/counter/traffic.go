@@ -7,18 +7,6 @@ import (
 
 type TrafficCounter struct {
 	Counters sync.Map
-	// W6 / B3: tracks which uuids received traffic since the last
-	// IterateDirty(true) call. Replaces the O(N) Counters.Range every
-	// upload period with O(active-users-this-period). At 10k users where
-	// only ~100 are active per period this is a 100× speedup on the
-	// report path (relevant for sing/xray GetUserTrafficSlice).
-	//
-	// Pointer is swapped atomically by IterateDirty so we don't hold a
-	// lock during traffic accounting on the hot path. The pointer-swap
-	// ensures we never miss a fresh Rx/Tx that races with the swap —
-	// worst case the dirty mark lands in the new map and is collected
-	// next period.
-	dirty atomic.Pointer[sync.Map]
 
 	// W6 review #5: counts report periods so MaybePruneIdle can run a full
 	// orphan sweep only every Nth period instead of every period.
@@ -28,12 +16,11 @@ type TrafficCounter struct {
 type TrafficStorage struct {
 	UpCounter   atomic.Int64
 	DownCounter atomic.Int64
+	dirty       atomic.Bool
 }
 
 func NewTrafficCounter() *TrafficCounter {
-	tc := &TrafficCounter{}
-	tc.dirty.Store(&sync.Map{})
-	return tc
+	return &TrafficCounter{}
 }
 
 func (c *TrafficCounter) GetCounter(uuid string) *TrafficStorage {
@@ -47,78 +34,45 @@ func (c *TrafficCounter) GetCounter(uuid string) *TrafficStorage {
 	return newStorage
 }
 
-// markDirty records that this uuid received some traffic. Called from Rx/Tx
-// on the data hot path — must be cheap. sync.Map.Store on an already-present
-// key is a single atomic.Pointer load+compare, so amortised this is O(1).
-//
-// Concurrency contract — what the retry loop defends against:
-//
-// The naive "d := dirty.Load(); d.Store(uuid, _)" sequence is NOT a single
-// atomic op. If an IterateDirty(true) call slips between the Load and the
-// Store, our Store lands in a map that the iterator has already swapped
-// OUT and is now Range-ing as a snapshot. sync.Map.Range explicitly
-// documents that concurrent Stores during a Range may NOT be reflected —
-// so a worst-case interleaving leaves our mark in a discarded snapshot
-// while the live dirty (the one the iterator just installed) has no
-// record of our uuid. The traffic byte we just Added to ts.Down then has
-// no path to drain — silently lost, ~0.05% miss rate under contention.
-//
-// Fix: after Store, verify the dirty pointer hasn't changed. If it has,
-// the iterator may have already missed our store; re-Store in the new
-// live dirty. The loop runs at most ~"number of concurrent iterators"
-// times, which is 1 in practice (the report task).
-func (c *TrafficCounter) markDirty(uuid string) {
-	for {
-		d := c.dirty.Load()
-		if d == nil {
-			return
-		}
-		d.Store(uuid, struct{}{})
-		if c.dirty.Load() == d {
-			return
-		}
-		// dirty pointer changed between our Load and our Store — an
-		// IterateDirty(true) swapped while we were mid-mark. Loop to mark
-		// in the new live dirty so the next iteration sees us.
-	}
+// MarkDirty publishes traffic after its byte counters have been updated.
+// Connections retain their storage pointer, so marking needs no map lookup,
+// allocation, or shared map write. A removed connection cannot dirty a new
+// user's storage if the same UUID is subsequently added again.
+func (s *TrafficStorage) MarkDirty() {
+	s.dirty.Store(true)
 }
 
-// MarkDirty is the exported equivalent of markDirty for callers that
-// account traffic via direct atomic.Int64.Add on a TrafficStorage rather
-// than going through Tx/Rx (notably the xray dispatcher's SizeStatWriter
-// and CounterReader wrappers).
+// MarkDirty supports callers that only have a UUID. It never recreates a
+// deleted counter; callers retaining a TrafficStorage should mark it directly.
 func (c *TrafficCounter) MarkDirty(uuid string) {
-	c.markDirty(uuid)
+	if v, ok := c.Counters.Load(uuid); ok {
+		v.(*TrafficStorage).MarkDirty()
+	}
 }
 
-// IterateDirty calls fn for each (uuid, cts) that received Rx/Tx since the
-// previous IterateDirty call. If clear is true, the dirty set is swapped
-// for a fresh empty one BEFORE iteration — so traffic that arrives during
-// iteration is tracked for the NEXT period rather than missed. Returning
-// false from fn aborts the iteration (mirrors sync.Map.Range semantics).
+// IterateDirty scans the user table at reporting frequency and calls fn only
+// for dirty entries. This trades a low-frequency O(users) scan for removing
+// per-data-block sync.Map writes and allocations from the transfer path.
 //
-// W6 / B3: replaces TrafficCounter.Counters.Range on the upload path.
-// Idle users no longer cost us a Range visit per period.
+// Clear BEFORE fn drains the counters: a concurrent writer either contributes
+// to this drain or leaves the entry dirty for the next one. Never clear after
+// fn, which could erase a fresh mark. As before, callers serialize reporting
+// drains. Returning false preserves the marks of entries not yet visited.
 func (c *TrafficCounter) IterateDirty(clear bool, fn func(uuid string, cts *TrafficStorage) bool) {
-	var d *sync.Map
-	if clear {
-		d = c.dirty.Swap(&sync.Map{})
-	} else {
-		d = c.dirty.Load()
-	}
-	if d == nil {
-		return
-	}
-	d.Range(func(k, _ interface{}) bool {
+	c.Counters.Range(func(k, v interface{}) bool {
 		uuid, ok := k.(string)
 		if !ok {
 			return true
 		}
-		v, exists := c.Counters.Load(uuid)
-		if !exists {
+		ts := v.(*TrafficStorage)
+		dirty := ts.dirty.Load()
+		if clear && dirty {
+			dirty = ts.dirty.Swap(false)
+		}
+		if !dirty {
 			return true
 		}
-		return fn(uuid, v.(*TrafficStorage))
+		return fn(uuid, ts)
 	})
 }
 
@@ -127,12 +81,9 @@ func (c *TrafficCounter) IterateDirty(clear bool, fn func(uuid string, cts *Traf
 // zero-byte guard means an entry that is mid-accounting (has pending traffic
 // not yet reported) is never dropped — only genuinely idle orphans go.
 //
-// W6 review #5: the dirty-set fast path (IterateDirty) only ever visits
-// users who sent traffic THIS period, so a "was active → removed from
-// uidMap → went idle" user's TrafficStorage would otherwise live forever
-// (the per-period cleanup branches only run for dirty users). Callers run
-// this occasionally (every N report periods) to restore the full-Range GC
-// guarantee that the pre-dirty-set code had, without paying it every period.
+// IterateDirty only invokes callbacks for dirty users. Periodic pruning also
+// checks removed users that have become idle. CompareAndDelete ensures that
+// a concurrent delete/re-add cannot make this sweep remove the replacement.
 func (c *TrafficCounter) PruneIdle(keep func(uuid string) bool) {
 	c.Counters.Range(func(k, v interface{}) bool {
 		uuid, ok := k.(string)
@@ -144,7 +95,7 @@ func (c *TrafficCounter) PruneIdle(keep func(uuid string) bool) {
 		}
 		ts := v.(*TrafficStorage)
 		if ts.UpCounter.Load() == 0 && ts.DownCounter.Load() == 0 {
-			c.Counters.Delete(uuid)
+			c.Counters.CompareAndDelete(uuid, ts)
 		}
 		return true
 	})
@@ -202,11 +153,11 @@ func (c *TrafficCounter) Delete(uuid string) {
 func (c *TrafficCounter) Rx(uuid string, n int) {
 	cts := c.GetCounter(uuid)
 	cts.DownCounter.Add(int64(n))
-	c.markDirty(uuid) // W6 / B3
+	cts.MarkDirty()
 }
 
 func (c *TrafficCounter) Tx(uuid string, n int) {
 	cts := c.GetCounter(uuid)
 	cts.UpCounter.Add(int64(n))
-	c.markDirty(uuid) // W6 / B3
+	cts.MarkDirty()
 }

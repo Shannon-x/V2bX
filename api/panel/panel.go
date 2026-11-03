@@ -18,6 +18,7 @@ import (
 // Panel is the interface for different panel's api.
 
 type Client struct {
+	maxUsers         int
 	client           *resty.Client
 	APIHost          string
 	APISendIP        string
@@ -33,6 +34,17 @@ type Client struct {
 }
 
 func New(c *conf.ApiConfig) (*Client, error) {
+	if c.MaxResponseBodyBytes < 0 || c.MaxUsers < 0 {
+		return nil, fmt.Errorf("panel response and user limits cannot be negative")
+	}
+	maxBody := c.MaxResponseBodyBytes
+	if maxBody == 0 {
+		maxBody = 64 << 20
+	}
+	maxUsers := c.MaxUsers
+	if maxUsers == 0 {
+		maxUsers = 500000
+	}
 	var client *resty.Client
 	if c.APISendIP != "" {
 		client = resty.NewWithLocalAddr(&net.TCPAddr{
@@ -49,7 +61,7 @@ func New(c *conf.ApiConfig) (*Client, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.MaxIdleConnsPerHost = 10
 	transport.IdleConnTimeout = 90 * time.Second
-	client.SetTransport(transport)
+	client.SetTransport(&boundedTransport{Transport: transport, maxBytes: maxBody})
 	client.SetRetryCount(0)
 	if c.Timeout > 0 {
 		client.SetTimeout(time.Duration(c.Timeout) * time.Second)
@@ -93,6 +105,7 @@ func New(c *conf.ApiConfig) (*Client, error) {
 		apiVersion = 1
 	}
 	return &Client{
+		maxUsers:   maxUsers,
 		client:     client,
 		Token:      c.Key,
 		APIHost:    c.APIHost,
@@ -106,7 +119,5 @@ func New(c *conf.ApiConfig) (*Client, error) {
 }
 
 func (c *Client) Close() {
-	if t, ok := c.client.GetClient().Transport.(*http.Transport); ok {
-		t.CloseIdleConnections()
-	}
+	c.client.GetClient().CloseIdleConnections()
 }

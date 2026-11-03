@@ -394,6 +394,9 @@ func getInboundOptions(tag string, info *panel.NodeInfo, c *conf.Options) (optio
 }
 
 func (b *Sing) AddNode(tag string, info *panel.NodeInfo, config *conf.Options) error {
+	tagMu := b.tagMutex(tag)
+	tagMu.Lock()
+	defer tagMu.Unlock()
 	reportMin := config.ReportMinTraffic
 	if info.NodeReportMinTraffic > 0 {
 		reportMin = int64(info.NodeReportMinTraffic)
@@ -443,24 +446,24 @@ func (b *Sing) UpdateNodeReportMinTraffic(tag string, info *panel.NodeInfo, conf
 }
 
 func (b *Sing) DelNode(tag string) error {
-	// 清理 hookServer 中的流量计数器
+	tagMu := b.tagMutex(tag)
+	tagMu.Lock()
+	defer tagMu.Unlock()
+	if err := b.box.Inbound().Remove(tag); err != nil {
+		return fmt.Errorf("delete inbound error: %w", err)
+	}
 	b.hookServer.counter.Delete(tag)
-
-	// W2.3: clean both per-tag maps under optsMu.
 	b.optsMu.Lock()
 	delete(b.nodeReportMinTrafficBytes, tag)
 	delete(b.inboundOptions, tag)
 	b.optsMu.Unlock()
-
-	// W2.9 / W6: drop the per-tag lock entry so a subsequent AddNode for
-	// the same tag gets a fresh mutex (and we don't leak entries in the
-	// long-running sync.Map).
-	b.tagLocks.Delete(tag)
-
-	in := b.box.Inbound()
-	err := in.Remove(tag)
-	if err != nil {
-		return fmt.Errorf("delete inbound error: %s", err)
+	b.users.mapLock.Lock()
+	for key := range b.users.uidMap {
+		if strings.HasPrefix(key, tag+"|") {
+			delete(b.users.uidMap, key)
+		}
 	}
+	b.users.mapLock.Unlock()
+	// Keep the per-tag mutex stable for callbacks already waiting on it.
 	return nil
 }

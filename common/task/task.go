@@ -10,130 +10,172 @@ import (
 )
 
 type Task struct {
-	Name     string
+	Name string
+	// Interval is the initial interval. Use SetInterval once the task starts.
 	Interval time.Duration
-	// Execute is the legacy callback (no ctx). Use ExecuteCtx for new code so
-	// the watchdog timeout actually cancels the in-flight work (in particular
-	// the resty HTTP call) instead of merely leaking a goroutine holding the
-	// stalled response body. W3.2 / audit #25 #44.
+	// Execute is retained for synchronous work that cannot accept a context.
+	// Close waits for it to return; cancellation cannot forcibly stop Go code.
 	Execute    func() error
-	ExecuteCtx func(ctx context.Context) error
+	ExecuteCtx func(context.Context) error
 	Reload     func()
-	access     sync.Mutex
 
-	running bool
-	stop    chan struct{}
+	access sync.Mutex
+	run    *execution
+}
+
+type execution struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
+	wake   chan struct{}
 }
 
 func (t *Task) Start(first bool) error {
 	t.access.Lock()
-	if t.running {
-		t.access.Unlock()
+	defer t.access.Unlock()
+	if t.run != nil {
 		return nil
 	}
-	t.running = true
-	t.stop = make(chan struct{})
-	t.access.Unlock()
-
-	stopCh := t.stop // Capture local channel to prevent struct field overwrite issues
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Errorf("Task panic recovered: %v", r)
-				t.access.Lock()
-				t.running = false
-				t.access.Unlock()
-			}
-		}()
-
-		if first {
-			if err := t.executeWithTimeout(); err != nil {
-				t.access.Lock()
-				t.running = false
-				close(t.stop)
-				t.access.Unlock()
-				return
-			}
-		}
-
-		timer := time.NewTimer(t.Interval)
-		defer timer.Stop()
-
-		for {
-			select {
-			case <-timer.C:
-			case <-stopCh:
-				return
-			}
-
-			if err := t.executeWithTimeout(); err != nil {
-				t.access.Lock()
-				t.running = false
-				close(t.stop)
-				t.access.Unlock()
-				return
-			}
-
-			timer.Reset(t.Interval)
-		}
-	}()
-
+	if t.Interval <= 0 {
+		return fmt.Errorf("task %s interval must be positive", t.Name)
+	}
+	if t.ExecuteCtx == nil && t.Execute == nil {
+		return fmt.Errorf("task %s has no callback", t.Name)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &execution{ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: make(chan struct{}, 1)}
+	t.run = r
+	go t.loop(r, first)
 	return nil
 }
 
-// executeWithTimeout wraps Execute / ExecuteCtx with a timeout to prevent
-// goroutine leaks when API calls hang. When ExecuteCtx is set, the timeout
-// ctx is propagated to the callback so resty (or any other I/O) can abort
-// the in-flight request — matching v2node's pattern and what audit #25 / #44
-// recommended.
-func (t *Task) executeWithTimeout() error {
-	timeout := 3 * t.Interval
-	if timeout > 5*time.Minute {
-		timeout = 5 * time.Minute
+// SetInterval is safe to call from a running callback. It changes the next
+// scheduled run without stopping, replacing, or overlapping the current run.
+func (t *Task) SetInterval(interval time.Duration) {
+	if interval <= 0 {
+		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	t.access.Lock()
+	defer t.access.Unlock()
+	if t.Interval == interval {
+		return
+	}
+	t.Interval = interval
+	if t.run != nil {
+		select {
+		case t.run.wake <- struct{}{}:
+		default:
+		}
+	}
+}
 
-	done := make(chan error, 1)
-	go func() {
-		// W6 review #15: the outer scheduler goroutine's recover does NOT
-		// cover this inner goroutine. Without this defer, a panic in
-		// Execute/ExecuteCtx (e.g. an unexpected type assertion deep in the
-		// report path) would crash the whole process instead of failing just
-		// this cycle. Convert the panic into an error on the done channel.
-		defer func() {
-			if r := recover(); r != nil {
-				log.Errorf("Task %s panicked: %v", t.Name, r)
+func (t *Task) interval() time.Duration {
+	t.access.Lock()
+	defer t.access.Unlock()
+	return t.Interval
+}
+
+func (t *Task) loop(r *execution, first bool) {
+	defer func() {
+		r.cancel()
+		t.access.Lock()
+		if t.run == r {
+			t.run = nil
+		}
+		close(r.done)
+		t.access.Unlock()
+	}()
+	if first && t.execute(r.ctx) != nil {
+		return
+	}
+	timer := time.NewTimer(t.interval())
+	defer timer.Stop()
+	for {
+		select {
+		case <-r.ctx.Done():
+			return
+		case <-r.wake:
+			if !timer.Stop() {
 				select {
-				case done <- fmt.Errorf("task %s panic: %v", t.Name, r):
+				case <-timer.C:
 				default:
 				}
 			}
-		}()
-		if t.ExecuteCtx != nil {
-			done <- t.ExecuteCtx(ctx)
-			return
+			timer.Reset(t.interval())
+		case <-timer.C:
+			if r.ctx.Err() != nil || t.execute(r.ctx) != nil {
+				return
+			}
+			timer.Reset(t.interval())
 		}
-		done <- t.Execute()
-	}()
+	}
+}
 
-	select {
-	case <-ctx.Done():
-		log.Errorf("Task %s execution timed out, skipping this cycle and triggering reload", t.Name)
-		if t.Reload != nil {
-			go t.Reload()
+// execute runs inline: a timed-out callback must finish before another callback
+// or reload can start. Context-aware I/O still observes the watchdog deadline.
+func (t *Task) execute(parent context.Context) (err error) {
+	if parent.Err() != nil {
+		return parent.Err()
+	}
+	timeout := t.interval()
+	if timeout >= 5*time.Minute/3 {
+		timeout = 5 * time.Minute
+	} else {
+		timeout *= 3
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("task %s panic: %v", t.Name, r)
+			log.Error(err)
 		}
-		return nil // don't return error — just skip this cycle
-	case err := <-done:
-		return err
+	}()
+	if t.ExecuteCtx != nil {
+		err = t.ExecuteCtx(ctx)
+	} else {
+		err = t.Execute()
+	}
+	if parent.Err() != nil {
+		return parent.Err()
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		log.Errorf("Task %s execution timed out; callback stopped before reload", t.Name)
+		if t.Reload != nil {
+			t.Reload()
+		}
+		return nil
+	}
+	return err
+}
+
+// Stop requests cancellation without waiting, allowing owners to cancel every
+// task before waiting for any one task. A callback must not call Close on itself.
+func (t *Task) Stop() {
+	t.access.Lock()
+	defer t.access.Unlock()
+	if t.run != nil {
+		t.run.cancel()
+	}
+}
+
+func (t *Task) Wait() {
+	t.access.Lock()
+	r := t.run
+	t.access.Unlock()
+	if r != nil {
+		<-r.done
 	}
 }
 
 func (t *Task) Close() {
 	t.access.Lock()
-	if t.running {
-		t.running = false
-		close(t.stop)
+	r := t.run
+	if r != nil {
+		r.cancel()
 	}
 	t.access.Unlock()
+	if r != nil {
+		<-r.done
+	}
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/proxy"
 	hyaccount "github.com/xtls/xray-core/proxy/hysteria/account"
+	"google.golang.org/protobuf/proto"
 )
 
 func (c *Xray) GetUserManager(tag string) (proxy.UserManager, error) {
@@ -44,8 +45,17 @@ func (c *Xray) DelUsers(users []panel.UserInfo, tag string, _ *panel.NodeInfo) e
 	defer c.users.mapLock.Unlock()
 	for i := range users {
 		user = format.UserTag(tag, users[i].Uuid)
+		// A snapshot retry may repeat deletions that already succeeded before
+		// a later addition failed. Bookkeeping is removed only on success.
+		if _, present := c.users.uidMap[user]; !present {
+			continue
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		err = userManager.RemoveUser(ctx, user)
+		if userManager.GetUser(ctx, user) != nil {
+			err = userManager.RemoveUser(ctx, user)
+		} else {
+			err = nil
+		}
 		cancel()
 		if err != nil {
 			return err
@@ -77,11 +87,8 @@ func (x *Xray) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 	x.reportMu.RUnlock()
 	if v, ok := x.dispatcher.Counter.Load(tag); ok {
 		c := v.(*counter.TrafficCounter)
-		// W6 / B3: iterate only users who actually received traffic since
-		// the previous report. On a 100k-user node with ~100 active users
-		// per period this is ~1000× faster than Counters.Range. Idle entries
-		// are simply skipped (the cleanup of long-dead entries happens via
-		// DelUsers / DelNode, not the report path).
+		// Scan the user table once per report, invoking the callback only for
+		// dirty counters. Data-plane updates avoid shared dirty-map writes.
 		walk := func(emailKey string, traffic *counter.TrafficStorage) bool {
 			email := emailKey
 			var up, down int64
@@ -111,7 +118,7 @@ func (x *Xray) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic,
 				}
 				// Below threshold, add back to avoid losing small amounts.
 				// W6 follow-up #2: MUST re-mark dirty — IterateDirty(true)
-				// already swapped the dirty map to empty, so without this the
+				// already cleared this counter's dirty bit, so without this the
 				// added-back bytes are stranded and never reported until the
 				// user happens to send more traffic. Mirrors the ReturnUserTraffic
 				// backfill fix.
@@ -186,10 +193,8 @@ func (x *Xray) ReturnUserTraffic(tag string, traffic []panel.UserTraffic) error 
 }
 
 func (c *Xray) AddUsers(p *vCore.AddUsersParams) (added int, err error) {
-	c.users.mapLock.Lock()
-	defer c.users.mapLock.Unlock()
-	for i := range p.Users {
-		c.users.uidMap[format.UserTag(p.Tag, p.Users[i].Uuid)] = p.Users[i].Id
+	if p.NodeInfo == nil {
+		return 0, fmt.Errorf("missing node info")
 	}
 	var users []*protocol.User
 	switch p.NodeInfo.Type {
@@ -209,23 +214,53 @@ func (c *Xray) AddUsers(p *vCore.AddUsersParams) (added int, err error) {
 	default:
 		return 0, fmt.Errorf("unsupported node type: %s", p.NodeInfo.Type)
 	}
-	man, err := c.GetUserManager(p.Tag)
-	if err != nil {
-		return 0, fmt.Errorf("get user manager error: %s", err)
-	}
+	// Validate the complete batch before mutating the live user manager.
+	memoryUsers := make([]*protocol.MemoryUser, 0, len(users))
 	for _, u := range users {
 		mUser, err := u.ToMemoryUser()
 		if err != nil {
 			return 0, err
 		}
+		memoryUsers = append(memoryUsers, mUser)
+	}
+	ids := make(map[string]int, len(p.Users))
+	for _, u := range p.Users {
+		ids[format.UserTag(p.Tag, u.Uuid)] = u.Id
+	}
+	man, err := c.GetUserManager(p.Tag)
+	if err != nil {
+		return 0, fmt.Errorf("get user manager error: %w", err)
+	}
+	c.users.mapLock.Lock()
+	defer c.users.mapLock.Unlock()
+	for _, u := range memoryUsers {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		err = man.AddUser(ctx, mUser)
+		// Only check existing bookkeeping on the retry path. Fresh batches
+		// avoid an extra user-manager lookup (linear for SS2022).
+		if _, present := c.users.uidMap[u.Email]; present {
+			if existing := man.GetUser(ctx, u.Email); existing != nil {
+				cancel()
+				if existing.Level != u.Level || !proto.Equal(existing.Account.ToProto(), u.Account.ToProto()) {
+					return added, fmt.Errorf("existing user account differs: %s", u.Email)
+				}
+				c.users.uidMap[u.Email] = ids[u.Email]
+				continue
+			}
+			// DelNode/rebuild may have replaced the manager. A stale UID entry
+			// is not proof that the replacement inbound contains this user.
+			delete(c.users.uidMap, u.Email)
+		}
+		err = man.AddUser(ctx, u)
 		cancel()
 		if err != nil {
-			return 0, err
+			return added, err
 		}
+		// Publish only successfully registered users. A partial batch remains
+		// retryable without duplicate AddUser calls or resetting counters.
+		c.users.uidMap[u.Email] = ids[u.Email]
+		added++
 	}
-	return len(users), nil
+	return added, nil
 }
 
 func buildHysteria2Users(tag string, userInfo []panel.UserInfo) (users []*protocol.User) {

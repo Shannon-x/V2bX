@@ -11,50 +11,90 @@ import (
 )
 
 type Selector struct {
-	cores map[string]Core
-	nodes sync.Map
+	cores     map[string]Core
+	ordered   []Core
+	nodes     sync.Map
+	lifecycle sync.Mutex
+	started   bool
+	closed    bool
+	closeErr  error
 }
 
-func NewSelector(c []conf.CoreConfig) (Core, error) {
-	cs := make(map[string]Core, len(c))
+func NewSelector(c []conf.CoreConfig) (result Core, err error) {
+	s := &Selector{cores: make(map[string]Core, len(c)), ordered: make([]Core, 0, len(c))}
+	defer func() {
+		if p := recover(); p != nil {
+			result = nil
+			err = fmt.Errorf("construct core: %v", p)
+		}
+		if err != nil {
+			err = errors.Join(err, s.Close())
+		}
+	}()
 	for _, t := range c {
+		name := t.Name
+		if name == "" {
+			name = t.Type
+		}
+		if _, exists := s.cores[name]; exists {
+			return nil, fmt.Errorf("duplicate core name %q", name)
+		}
 		f, ok := cores[strings.ToLower(t.Type)]
 		if !ok {
 			return nil, errors.New("unknown core type: " + t.Type)
 		}
 		core1, err := f(&t)
+		if core1 != nil {
+			// Even a constructor returning a partial result with an error has
+			// transferred resources that need to be rolled back.
+			s.ordered = append(s.ordered, core1)
+		}
 		if err != nil {
 			return nil, err
 		}
-		if t.Name == "" {
-			cs[t.Type] = core1
-		} else {
-			cs[t.Name] = core1
+		if core1 == nil {
+			return nil, fmt.Errorf("core %q constructor returned nil", name)
 		}
+		s.cores[name] = core1
 	}
-	return &Selector{
-		cores: cs,
-	}, nil
+	return s, nil
 }
 
 func (s *Selector) Start() error {
-	for i := range s.cores {
-		err := s.cores[i].Start()
-		if err != nil {
-			return err
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
+	if s.closed {
+		return errors.New("core selector is closed")
+	}
+	if s.started {
+		return nil
+	}
+	for _, c := range s.ordered {
+		if err := c.Start(); err != nil {
+			return errors.Join(err, s.closeLocked())
 		}
 	}
+	s.started = true
 	return nil
 }
 
 func (s *Selector) Close() error {
-	var errs []error
-	for i := range s.cores {
-		if err := s.cores[i].Close(); err != nil {
-			errs = append(errs, err)
-		}
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
+	return s.closeLocked()
+}
+
+func (s *Selector) closeLocked() error {
+	if s.closed {
+		return s.closeErr
 	}
-	return errors.Join(errs...)
+	s.closed = true
+	// Include unstarted cores: constructors may already own loggers, sockets,
+	// timers, and other resources. Reverse order mirrors construction.
+	for i := len(s.ordered) - 1; i >= 0; i-- {
+		s.closeErr = errors.Join(s.closeErr, s.ordered[i].Close())
+	}
+	return s.closeErr
 }
 
 func isSupported(protocol string, protocols []string) bool {
@@ -123,6 +163,14 @@ func (s *Selector) AddUsers(p *AddUsersParams) (added int, err error) {
 		return 0, errors.New("the node is not have")
 	}
 	return t.(Core).AddUsers(p)
+}
+
+func (s *Selector) UpdateUsers(p *UpdateUsersParams) error {
+	t, ok := s.nodes.Load(p.Tag)
+	if !ok {
+		return errors.New("the node is not have")
+	}
+	return ApplyUserUpdate(t.(Core), p)
 }
 
 func (s *Selector) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTraffic, error) {

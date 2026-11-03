@@ -25,36 +25,49 @@ func New() *Node {
 // on the nil slot at the failure index.
 //
 // W5.1 / audit #61.
-func (n *Node) Start(nodes []conf.NodeConfig, core vCore.Core) error {
+func (n *Node) Start(nodes []conf.NodeConfig, core vCore.Core) (err error) {
 	started := make([]*Controller, 0, len(nodes))
-	rollback := func(reason error) {
-		log.WithField("err", reason).Warn("Rolling back partially-started node controllers")
-		for _, c := range started {
-			if cerr := c.Close(); cerr != nil {
-				log.WithField("err", cerr).Error("Rollback close node controller error")
+	var current *Controller
+	defer func() {
+		panicValue := recover()
+		if err == nil && panicValue == nil {
+			return
+		}
+		log.WithField("err", err).Warn("Rolling back partially-started node controllers")
+		closeController := func(c *Controller) {
+			if c == nil {
+				return
+			}
+			defer func() {
+				if r := recover(); r != nil {
+					log.Errorf("Rollback controller panic: %v", r)
+				}
+			}()
+			if closeErr := c.Close(); closeErr != nil {
+				log.WithError(closeErr).Error("Rollback close node controller error")
 			}
 		}
-	}
+		closeController(current)
+		for i := len(started) - 1; i >= 0; i-- {
+			closeController(started[i])
+		}
+		if panicValue != nil {
+			panic(panicValue)
+		}
+	}()
 	for i := range nodes {
-		p, err := panel.New(&nodes[i].ApiConfig)
-		if err != nil {
-			rollback(err)
-			return fmt.Errorf("create panel client for [%s-%s-%d] error: %s",
-				nodes[i].ApiConfig.APIHost,
-				nodes[i].ApiConfig.NodeType,
-				nodes[i].ApiConfig.NodeID,
-				err)
+		p, clientErr := panel.New(&nodes[i].ApiConfig)
+		if clientErr != nil {
+			return fmt.Errorf("create panel client for [%s-%s-%d] error: %w",
+				nodes[i].ApiConfig.APIHost, nodes[i].ApiConfig.NodeType, nodes[i].ApiConfig.NodeID, clientErr)
 		}
-		ctrl := NewController(core, p, &nodes[i])
-		if err := ctrl.Start(); err != nil {
-			rollback(err)
-			return fmt.Errorf("start node controller [%s-%s-%d] error: %s",
-				nodes[i].ApiConfig.APIHost,
-				nodes[i].ApiConfig.NodeType,
-				nodes[i].ApiConfig.NodeID,
-				err)
+		current = NewController(core, p, &nodes[i])
+		if startErr := current.Start(); startErr != nil {
+			return fmt.Errorf("start node controller [%s-%s-%d] error: %w",
+				nodes[i].ApiConfig.APIHost, nodes[i].ApiConfig.NodeType, nodes[i].ApiConfig.NodeID, startErr)
 		}
-		started = append(started, ctrl)
+		started = append(started, current)
+		current = nil
 	}
 	n.controllers = started
 	return nil

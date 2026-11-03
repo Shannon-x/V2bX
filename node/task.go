@@ -58,6 +58,7 @@ func (c *Controller) startTasks(node *panel.NodeInfo) {
 			Interval:   time.Duration(c.LimitConfig.DynamicSpeedLimitConfig.Periodic) * time.Second,
 			ExecuteCtx: c.SpeedChecker,
 		}
+		_ = c.dynamicSpeedLimitPeriodic.Start(false)
 		log.Printf("[%s: %d] Start dynamic speed limit", c.getAPIClient().NodeType, c.getAPIClient().NodeId)
 	}
 }
@@ -75,6 +76,10 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 		return nil
 	}
 
+	if newN != nil {
+		c.pendingNode = newN
+	}
+
 	// get user info
 	newU, err := api.GetUserListCtx(ctx)
 	if err != nil {
@@ -83,6 +88,12 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 			"err": err,
 		}).Error("Get user list failed")
 		return nil
+	}
+
+	// Preserve successfully fetched snapshots if a later request or apply fails:
+	// a subsequent conditional request may return 304 instead of resending them.
+	if newU != nil {
+		c.pendingUsers = newU
 	}
 
 	// get user alive
@@ -95,6 +106,11 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 		return nil
 	}
 
+	if ctx.Err() != nil {
+		return nil
+	}
+
+	newN = c.pendingNode
 	if newN != nil {
 		// Metadata refresh. The inbound listener itself is reconciled by the
 		// applyInboundConfig check that runs every poll (below) — a
@@ -142,24 +158,15 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 			}).Error("Update DNS failed")
 		}
 
-		// Check interval changes
-		if c.nodeInfoMonitorPeriodic.Interval != newN.PullInterval &&
-			newN.PullInterval != 0 {
-			c.nodeInfoMonitorPeriodic.Interval = newN.PullInterval
-			c.nodeInfoMonitorPeriodic.Close()
-			_ = c.nodeInfoMonitorPeriodic.Start(false)
+		// Updating a running task must not wait for that task's own callback.
+		if c.nodeInfoMonitorPeriodic != nil {
+			c.nodeInfoMonitorPeriodic.SetInterval(newN.PullInterval)
 		}
-		if c.userReportPeriodic.Interval != newN.PushInterval &&
-			newN.PushInterval != 0 {
-			c.userReportPeriodic.Interval = newN.PushInterval
-			c.userReportPeriodic.Close()
-			_ = c.userReportPeriodic.Start(false)
+		if c.userReportPeriodic != nil {
+			c.userReportPeriodic.SetInterval(newN.PushInterval)
 		}
 
-		// Fall through to user update logic below (don't return early)
-		if newU != nil {
-			// User list also arrived with the node update
-		}
+		c.pendingNode = nil
 	}
 
 	// H-10: reconcile the running inbound with the desired (panel) config on
@@ -171,12 +178,15 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 	// It must live outside the `if newN != nil` block because the panel's
 	// 304/hash cache makes newN nil once the (bad) config has been seen once —
 	// so relying on newN would warn only a single time and then go silent.
+	usersApplied := false
 	if desired := c.info.Load(); desired != nil && c.appliedSig != inboundSignature(desired) {
 		log.WithField("tag", c.tag).Info("Node inbound config changed, applying (port/TLS/network/cipher)")
 		if rerr := c.rebuildInbound(desired); rerr != nil {
 			log.WithFields(log.Fields{"tag": c.tag, "err": rerr}).
-				Error("!!! 节点配置未生效：面板新配置(端口/TLS/传输/加密)应用失败，仍在用旧配置运行，请检查面板该节点配置 !!!")
+				Error("!!! 节点配置未生效：面板新配置(端口/TLS/传输/加密)应用失败，请检查面板该节点配置 !!!")
+			return nil
 		}
+		usersApplied = true
 	}
 
 	// update alive list
@@ -184,40 +194,24 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 		c.limiter.ReplaceAliveCounts(newA)
 	}
 
-	// check users
-	if len(newU) == 0 {
+	// nil means no new snapshot (304); an explicit empty list removes everyone.
+	if c.pendingUsers == nil {
 		return nil
 	}
+	newU = c.pendingUsers
 	deleted, added, modified := compareUserList(c.userList, newU)
-	// W2.4: snapshot the current NodeInfo pointer once for the rest of this
-	// tick; downstream calls must not re-Load to avoid mismatches.
 	curInfo := c.info.Load()
-	if len(deleted) > 0 {
-		// have deleted users
-		err = c.server.DelUsers(deleted, c.tag, curInfo)
-		if err != nil {
-			log.WithFields(log.Fields{
-				"tag": c.tag,
-				"err": err,
-			}).Error("Delete users failed")
-			return nil
-		}
-	}
-	if len(added) > 0 {
-		// have added users
-		_, err = c.server.AddUsers(&vCore.AddUsersParams{
-			Tag:      c.tag,
-			NodeInfo: curInfo,
-			Users:    added,
+	if !usersApplied && (len(deleted) > 0 || len(added) > 0) {
+		err = vCore.ApplyUserUpdate(c.server, &vCore.UpdateUsersParams{
+			AddUsersParams: vCore.AddUsersParams{Tag: c.tag, NodeInfo: curInfo, Users: newU},
+			Added:          added, Deleted: deleted,
 		})
 		if err != nil {
-			log.WithFields(log.Fields{
-				"tag": c.tag,
-				"err": err,
-			}).Error("Add users failed")
+			log.WithFields(log.Fields{"tag": c.tag, "err": err}).Error("Update users failed; will retry snapshot")
 			return nil
 		}
 	}
+
 	if len(added) > 0 || len(deleted) > 0 || len(modified) > 0 {
 		// update Limiter
 		c.limiter.UpdateUser(c.tag, added, deleted, modified)
@@ -232,6 +226,7 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 		}
 	}
 	c.userList = newU
+	c.pendingUsers = nil
 	if len(added)+len(deleted)+len(modified) != 0 {
 		log.WithField("tag", c.tag).
 			Infof("%d user deleted, %d user added, %d user modified", len(deleted), len(added), len(modified))

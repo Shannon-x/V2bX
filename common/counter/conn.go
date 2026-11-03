@@ -14,49 +14,35 @@ import (
 
 // ConnCounter wraps a sing net.Conn so byte counts are accumulated into the
 // per-user TrafficStorage.
-//
-// W6 fix-up: previously Read/Write only incremented the atomic counters and
-// the per-tag TrafficCounter.IterateDirty (used by GetUserTrafficSlice) never
-// saw these users — sing traffic was effectively unreportable. The wrapper
-// now also holds a pointer back to its parent TrafficCounter plus the uuid
-// so it can call MarkDirty on every byte movement (cheap: a single
-// sync.Map.Store on an already-present key amortizes to one atomic op).
+// The same allocation-free accounting is used by sing's unwrapped copy path.
 type ConnCounter struct {
 	network.ExtendedConn
 	storage   *TrafficStorage
-	parent    *TrafficCounter
-	uuid      string
 	readFunc  network.CountFunc
 	writeFunc network.CountFunc
 }
 
 // NewConnCounter constructs a sing.net.Conn that counts traffic into the
-// (uuid) slot of the given TrafficCounter. Both parent and uuid are
-// required for IterateDirty-based reporting to see this user; passing them
-// as separate args keeps TrafficStorage allocation-free.
+// (uuid) slot of the given TrafficCounter.
 func NewConnCounter(conn net.Conn, parent *TrafficCounter, uuid string) net.Conn {
 	storage := parent.GetCounter(uuid)
 	c := &ConnCounter{
 		ExtendedConn: bufio.NewExtendedConn(conn),
 		storage:      storage,
-		parent:       parent,
-		uuid:         uuid,
 	}
 	c.readFunc = func(n int64) {
 		storage.UpCounter.Add(n)
-		parent.MarkDirty(uuid)
+		storage.MarkDirty()
 	}
 	c.writeFunc = func(n int64) {
 		storage.DownCounter.Add(n)
-		parent.MarkDirty(uuid)
+		storage.MarkDirty()
 	}
 	return c
 }
 
 func (c *ConnCounter) markDirty() {
-	if c.parent != nil {
-		c.parent.MarkDirty(c.uuid)
-	}
+	c.storage.MarkDirty()
 }
 
 func (c *ConnCounter) Read(b []byte) (n int, err error) {
@@ -122,37 +108,30 @@ func (c *ConnCounter) Upstream() any {
 type PacketConnCounter struct {
 	network.PacketConn
 	storage   *TrafficStorage
-	parent    *TrafficCounter
-	uuid      string
 	readFunc  network.CountFunc
 	writeFunc network.CountFunc
 }
 
-// NewPacketConnCounter — see NewConnCounter doc; the parent+uuid plumbing
-// is identical, just for sing.network.PacketConn instead of net.Conn.
+// NewPacketConnCounter accounts for sing.network.PacketConn instead of net.Conn.
 func NewPacketConnCounter(conn network.PacketConn, parent *TrafficCounter, uuid string) network.PacketConn {
 	storage := parent.GetCounter(uuid)
 	p := &PacketConnCounter{
 		PacketConn: conn,
 		storage:    storage,
-		parent:     parent,
-		uuid:       uuid,
 	}
 	p.readFunc = func(n int64) {
 		storage.UpCounter.Add(n)
-		parent.MarkDirty(uuid)
+		storage.MarkDirty()
 	}
 	p.writeFunc = func(n int64) {
 		storage.DownCounter.Add(n)
-		parent.MarkDirty(uuid)
+		storage.MarkDirty()
 	}
 	return p
 }
 
 func (p *PacketConnCounter) markDirty() {
-	if p.parent != nil {
-		p.parent.MarkDirty(p.uuid)
-	}
+	p.storage.MarkDirty()
 }
 
 func (p *PacketConnCounter) ReadPacket(buff *buf.Buffer) (destination M.Socksaddr, err error) {

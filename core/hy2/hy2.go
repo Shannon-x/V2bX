@@ -1,6 +1,7 @@
 package hy2
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/InazumaV/V2bX/api/panel"
@@ -19,10 +20,13 @@ var _ vCore.Core = (*Hysteria2)(nil)
 // flow). nodesMu serializes those accesses to prevent
 // `fatal error: concurrent map read and map write`.
 type Hysteria2 struct {
-	nodesMu  sync.RWMutex
-	Hy2nodes map[string]Hysteria2node
-	Auth     *V2bX
-	Logger   *zap.Logger
+	nodesMu   sync.RWMutex
+	Hy2nodes  map[string]Hysteria2node
+	Auth      *V2bX
+	Logger    *zap.Logger
+	closed    bool
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func init() {
@@ -58,21 +62,22 @@ func (h *Hysteria2) Start() error {
 }
 
 func (h *Hysteria2) Close() error {
-	// W2.1: snapshot under read lock to avoid concurrent map iteration with
-	// a DelNode / AddNode that arrives during shutdown.
-	h.nodesMu.RLock()
-	nodes := make([]Hysteria2node, 0, len(h.Hy2nodes))
-	for _, n := range h.Hy2nodes {
-		nodes = append(nodes, n)
-	}
-	h.nodesMu.RUnlock()
-	for _, n := range nodes {
-		err := n.Hy2server.Close()
-		if err != nil {
-			return err
+	h.closeOnce.Do(func() {
+		// Detach nodes atomically, so repeated Close/DelNode calls never close
+		// the same server and AddNode cannot publish after shutdown.
+		h.nodesMu.Lock()
+		h.closed = true
+		nodes := make([]Hysteria2node, 0, len(h.Hy2nodes))
+		for _, n := range h.Hy2nodes {
+			nodes = append(nodes, n)
 		}
-	}
-	return nil
+		clear(h.Hy2nodes)
+		h.nodesMu.Unlock()
+		for _, n := range nodes {
+			h.closeErr = errors.Join(h.closeErr, n.close())
+		}
+	})
+	return h.closeErr
 }
 
 func (h *Hysteria2) Type() string {

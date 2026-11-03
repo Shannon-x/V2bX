@@ -40,6 +40,9 @@ func buildInbound(option *conf.Options, nodeInfo *panel.NodeInfo, tag string) (*
 		network = "tcp"
 	case "hysteria2":
 		err = buildHysteria2(nodeInfo, in)
+		if err == nil {
+			err = applyHysteria2QUIC(option.XrayOptions.Hysteria2QUIC, in)
+		}
 		network = "hysteria"
 	default:
 		return nil, fmt.Errorf("unsupported node type: %s, Only support: V2ray, Trojan, Shadowsocks, Hysteria2", nodeInfo.Type)
@@ -123,6 +126,15 @@ func buildInbound(option *conf.Options, nodeInfo *panel.NodeInfo, tag string) (*
 			TFO:                 option.XrayOptions.EnableTFO,
 		}
 		in.StreamSetting.SocketSettings = socketConfig
+	}
+
+	// TCP and WebSocket take separate branches above, but TFO is a socket
+	// option for both as well. Do not replace other generated socket options.
+	if option.XrayOptions.EnableTFO {
+		if in.StreamSetting.SocketSettings == nil {
+			in.StreamSetting.SocketSettings = &coreConf.SocketConfig{}
+		}
+		in.StreamSetting.SocketSettings.TFO = true
 	}
 
 	// Also set SocketSettings for universal ProxyProtocol support (v2node compat)
@@ -554,5 +566,28 @@ func buildHysteria2(nodeInfo *panel.NodeInfo, inbound *coreConf.InboundDetourCon
 	if err != nil {
 		return fmt.Errorf("marshal hysteria2 settings error: %s", err)
 	}
+	return nil
+}
+
+func applyHysteria2QUIC(c *conf.XrayQUICConfig, in *coreConf.InboundDetourConfig) error {
+	if c == nil {
+		return nil
+	}
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	if in.StreamSetting.FinalMask == nil {
+		in.StreamSetting.FinalMask = &coreConf.FinalMask{}
+	}
+	if in.StreamSetting.FinalMask.QuicParams == nil {
+		in.StreamSetting.FinalMask.QuicParams = &coreConf.QuicParamsConfig{}
+	}
+	q := in.StreamSetting.FinalMask.QuicParams
+	q.InitStreamReceiveWindow = c.InitStreamReceiveWindow
+	q.MaxStreamReceiveWindow = c.MaxStreamReceiveWindow
+	q.InitConnectionReceiveWindow = c.InitConnectionReceiveWindow
+	q.MaxConnectionReceiveWindow = c.MaxConnectionReceiveWindow
+	q.MaxIncomingStreams = c.MaxIncomingStreams
+	q.MaxIdleTimeout = c.MaxIdleTimeout
 	return nil
 }

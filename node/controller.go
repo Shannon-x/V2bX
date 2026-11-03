@@ -24,10 +24,12 @@ type Controller struct {
 	// SpeedChecker on independent tickers. trafficMu serializes the map
 	// accesses (Go forbids concurrent map write + delete even if values
 	// aren't aliased).
-	traffic   map[string]int64
-	trafficMu sync.Mutex
-	userList  []panel.UserInfo
-	aliveMap  map[int]int
+	traffic      map[string]int64
+	trafficMu    sync.Mutex
+	userList     []panel.UserInfo
+	pendingUsers []panel.UserInfo
+	pendingNode  *panel.NodeInfo
+	aliveMap     map[int]int
 	// W2.4 / audit #4 #16: info is replaced on every nodeInfoMonitor tick
 	// and concurrently read by reportUserTrafficTask. atomic.Pointer keeps
 	// reads racefree without forcing every caller through a mutex.
@@ -38,14 +40,21 @@ type Controller struct {
 	// rebuild (H-10). Touched only from Start and the serial nodeInfoMonitor
 	// (Start completes before the periodic tasks run), so no lock is needed.
 	appliedSig                string
+	appliedInfo               *panel.NodeInfo
+	certMu                    sync.Mutex
 	nodeInfoMonitorPeriodic   *task.Task
 	userReportPeriodic        *task.Task
 	renewCertPeriodic         *task.Task
 	dynamicSpeedLimitPeriodic *task.Task
 	onlineIpReportPeriodic    *task.Task
 	*conf.Options
-	apiConfig *conf.ApiConfig
-	apiMutex  sync.RWMutex
+	apiConfig    *conf.ApiConfig
+	apiMutex     sync.RWMutex
+	closing      bool
+	closeOnce    sync.Once
+	closeErr     error
+	nodeAdded    bool
+	limiterAdded bool
 }
 
 // NewController return a Node controller with default parameters.
@@ -98,7 +107,9 @@ func inboundSignature(n *panel.NodeInfo) string {
 // genuinely changes — but is the only way the change takes effect without a
 // full process reload.
 func (c *Controller) rebuildInbound(newN *panel.NodeInfo) error {
-	old := c.info.Load()
+	old := c.appliedInfo
+	c.certMu.Lock()
+	defer c.certMu.Unlock()
 	if newN.Security == panel.Tls {
 		// 面板下发的证书配置优先于本地 config.json，
 		// remote 模式下证书内容也走这里带进来。
@@ -111,27 +122,41 @@ func (c *Controller) rebuildInbound(newN *panel.NodeInfo) error {
 	if err := c.server.DelNode(c.tag); err != nil {
 		return fmt.Errorf("del old node: %w", err)
 	}
-	if err := c.server.AddNode(c.tag, newN, c.Options); err != nil {
-		// Roll back to the previous inbound so the node keeps serving.
-		if old != nil {
-			if rerr := c.server.AddNode(c.tag, old, c.Options); rerr != nil {
-				log.WithField("tag", c.tag).Errorf("rebuild rollback AddNode failed — node DOWN: %v", rerr)
-			} else if _, uerr := c.server.AddUsers(&vCore.AddUsersParams{Tag: c.tag, NodeInfo: old, Users: c.userList}); uerr != nil {
-				log.WithField("tag", c.tag).Errorf("rebuild rollback AddUsers failed: %v", uerr)
-			} else {
-				log.WithField("tag", c.tag).Warn("Inbound rebuild failed; rolled back to previous inbound")
+	restore := func(cause error, removeCandidate bool) error {
+		if removeCandidate {
+			if err := c.server.DelNode(c.tag); err != nil {
+				return errors.Join(cause, fmt.Errorf("remove failed candidate: %w", err))
 			}
 		}
-		return fmt.Errorf("add new node: %w", err)
+		if old == nil {
+			return cause
+		}
+		if err := c.server.AddNode(c.tag, old, c.Options); err != nil {
+			return errors.Join(cause, fmt.Errorf("restore old inbound: %w", err))
+		}
+		if _, err := c.server.AddUsers(&vCore.AddUsersParams{Tag: c.tag, NodeInfo: old, Users: c.userList}); err != nil {
+			return errors.Join(cause, fmt.Errorf("restore old users: %w", err))
+		}
+		log.WithField("tag", c.tag).Warn("Inbound rebuild failed; restored previous inbound and users")
+		return cause
 	}
-	if _, err := c.server.AddUsers(&vCore.AddUsersParams{Tag: c.tag, NodeInfo: newN, Users: c.userList}); err != nil {
-		return fmt.Errorf("re-add users: %w", err)
+	if err := c.server.AddNode(c.tag, newN, c.Options); err != nil {
+		return restore(fmt.Errorf("add new node: %w", err), false)
 	}
+	users := c.userList
+	if c.pendingUsers != nil {
+		users = c.pendingUsers
+	}
+	if _, err := c.server.AddUsers(&vCore.AddUsersParams{Tag: c.tag, NodeInfo: newN, Users: users}); err != nil {
+		return restore(fmt.Errorf("re-add users: %w", err), true)
+	}
+
 	if err := c.server.AddNodeCustomOutbounds(newN, c.Options); err != nil {
 		log.WithField("tag", c.tag).Warnf("rebuild: add custom outbounds error: %v", err)
 	}
 	// Live inbound now matches newN; stop the poll path from rebuilding again.
 	c.appliedSig = inboundSignature(newN)
+	c.appliedInfo = newN
 	log.WithField("tag", c.tag).Info("Inbound rebuilt; new node config applied (port/TLS/network/cipher)")
 	return nil
 }
@@ -148,9 +173,6 @@ func (c *Controller) Start() error {
 	c.userList, err = c.getAPIClient().GetUserList()
 	if err != nil {
 		return fmt.Errorf("get user list error: %s", err)
-	}
-	if len(c.userList) == 0 {
-		return errors.New("add users error: not have any user")
 	}
 	c.aliveMap, err = c.getAPIClient().GetUserAlive()
 	if err != nil {
@@ -176,26 +198,18 @@ func (c *Controller) Start() error {
 	// connections that nothing would ever tear down (the outer node.Start
 	// rollback only Closes controllers it already appended, not this failing
 	// one). Track what we registered and unwind on any error path.
-	limiterAdded := false
-	nodeAdded := false
 	started := false
 	defer func() {
-		if started {
-			return
-		}
-		if nodeAdded {
-			if derr := c.server.DelNode(c.tag); derr != nil {
-				log.WithField("tag", c.tag).Warnf("rollback DelNode error: %v", derr)
+		if !started {
+			if err := c.Close(); err != nil {
+				log.WithField("tag", c.tag).Warnf("rollback controller error: %v", err)
 			}
-		}
-		if limiterAdded {
-			limiter.DeleteLimiter(c.tag)
 		}
 	}()
 
 	// add limiter
 	l := limiter.AddLimiter(node.Type, c.tag, &c.LimitConfig, c.userList, c.aliveMap)
-	limiterAdded = true
+	c.limiterAdded = true
 	// add rule limiter
 	if err = l.UpdateRule(&node.Rules); err != nil {
 		return fmt.Errorf("update rule error: %s", err)
@@ -215,7 +229,7 @@ func (c *Controller) Start() error {
 	if err != nil {
 		return fmt.Errorf("add new node error: %s", err)
 	}
-	nodeAdded = true
+	c.nodeAdded = true
 
 	err = c.server.AddNodeCustomOutbounds(node, c.Options)
 	if err != nil {
@@ -235,6 +249,7 @@ func (c *Controller) Start() error {
 	// Record what the live inbound was built with, so the poll path only
 	// rebuilds when the panel config actually diverges from it (H-10).
 	c.appliedSig = inboundSignature(node)
+	c.appliedInfo = node
 	c.startTasks(node)
 	started = true // success — disarm the rollback defer
 	return nil
@@ -242,34 +257,41 @@ func (c *Controller) Start() error {
 
 // Close implement the Close() function of the service interface
 func (c *Controller) Close() error {
-	limiter.DeleteLimiter(c.tag)
-	if c.nodeInfoMonitorPeriodic != nil {
-		c.nodeInfoMonitorPeriodic.Close()
-	}
-	if c.userReportPeriodic != nil {
-		c.userReportPeriodic.Close()
-	}
-	if c.renewCertPeriodic != nil {
-		c.renewCertPeriodic.Close()
-	}
-	if c.dynamicSpeedLimitPeriodic != nil {
-		c.dynamicSpeedLimitPeriodic.Close()
-	}
-	if c.onlineIpReportPeriodic != nil {
-		c.onlineIpReportPeriodic.Close()
-	}
-	err := c.server.DelNode(c.tag)
-	if err != nil {
-		return fmt.Errorf("del node error: %s", err)
-	}
-	// W3.3 / audit #47 #55: close the panel HTTP client so idle TLS
-	// connections (10 per host × 90s) don't leak across reloads.
-	c.apiMutex.Lock()
-	if c.apiClient != nil {
-		c.apiClient.Close()
-	}
-	c.apiMutex.Unlock()
-	return nil
+	c.closeOnce.Do(func() {
+		// Prevent watchdog recovery from replacing the client during shutdown.
+		c.apiMutex.Lock()
+		c.closing = true
+		c.apiMutex.Unlock()
+		tasks := []*task.Task{c.nodeInfoMonitorPeriodic, c.userReportPeriodic,
+			c.renewCertPeriodic, c.dynamicSpeedLimitPeriodic, c.onlineIpReportPeriodic}
+		for _, t := range tasks {
+			if t != nil {
+				t.Stop()
+			}
+		}
+		for _, t := range tasks {
+			if t != nil {
+				t.Wait()
+			}
+		}
+		// No callback can touch the core, limiter, or panel client after this point.
+		if c.nodeAdded {
+			if err := c.server.DelNode(c.tag); err != nil {
+				c.closeErr = fmt.Errorf("del node error: %w", err)
+			}
+			c.nodeAdded = false
+		}
+		if c.limiterAdded {
+			limiter.DeleteLimiter(c.tag)
+			c.limiterAdded = false
+		}
+		c.apiMutex.Lock()
+		if c.apiClient != nil {
+			c.apiClient.Close()
+		}
+		c.apiMutex.Unlock()
+	})
+	return c.closeErr
 }
 
 func (c *Controller) buildNodeTag(node *panel.NodeInfo) string {
@@ -285,6 +307,9 @@ func (c *Controller) getAPIClient() *panel.Client {
 func (c *Controller) reloadAPIClient() {
 	c.apiMutex.Lock()
 	defer c.apiMutex.Unlock()
+	if c.closing {
+		return
+	}
 
 	log.Warnf("[%s] Rebuilding API client to recover from task timeout...", c.tag)
 

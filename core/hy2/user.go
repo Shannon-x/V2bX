@@ -67,8 +67,7 @@ func (h *Hysteria2) ReturnUserTraffic(tag string, traffic []panel.UserTraffic) e
 		ts := c.GetCounter(uuid)
 		ts.UpCounter.Add(ud[0])
 		ts.DownCounter.Add(ud[1])
-		// W6 fix-up: see xray equivalent. MarkDirty is required so the
-		// next IterateDirty(true) sees the restored traffic.
+		// Mark the restored bytes for the next reporting pass.
 		c.MarkDirty(uuid)
 	}
 	return nil
@@ -120,7 +119,7 @@ func (h *Hysteria2) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTra
 	hook := node.TrafficLogger.(*HookServer)
 	if v, ok := hook.Counter.Load(tag); ok {
 		c := v.(*counter.TrafficCounter)
-		// W6 / B3: dirty-set iteration; see xray/sing equivalent.
+		// Scan stored users once per report and collect only dirty counters.
 		walk := func(uuidKey string, traffic *counter.TrafficStorage) bool {
 			uuid := uuidKey
 			var up, down int64
@@ -147,7 +146,7 @@ func (h *Hysteria2) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTra
 					c.Delete(uuid)
 					return true
 				}
-				// W6 follow-up #2: re-mark dirty (see xray equivalent).
+				// Keep below-threshold bytes marked for the next reporting pass.
 				traffic.UpCounter.Add(up)
 				traffic.DownCounter.Add(down)
 				c.MarkDirty(uuid)
@@ -158,7 +157,8 @@ func (h *Hysteria2) GetUserTrafficSlice(tag string, reset bool) ([]panel.UserTra
 			return true
 		}
 		c.IterateDirty(reset, walk)
-		// W6 review #5: occasional orphan sweep (see xray equivalent).
+		// Periodically remove idle counters belonging to deleted users,
+		// including entries skipped by the dirty-only callback.
 		// h.Auth.mutex is already held (RLock) for this whole function.
 		if reset {
 			c.MaybePruneIdle(func(uuid string) bool { return h.Auth.usersMap[uuid] != 0 })

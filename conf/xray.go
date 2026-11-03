@@ -59,6 +59,9 @@ func NewXrayConfig() *XrayConfig {
 }
 
 type XrayOptions struct {
+	// Hysteria2QUIC applies only to Xray's Hysteria2 transport. Nil retains
+	// the core's defaults; native Hy2 uses its own YAML configuration.
+	Hysteria2QUIC       *XrayQUICConfig         `json:"Hysteria2QUIC,omitempty"`
 	EnableProxyProtocol bool                    `json:"EnableProxyProtocol"`
 	EnableDNS           bool                    `json:"EnableDNS"`
 	DNSType             string                  `json:"DNSType"`

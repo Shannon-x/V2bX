@@ -11,6 +11,7 @@ import (
 	"github.com/InazumaV/V2bX/common/format"
 	"github.com/InazumaV/V2bX/core"
 	"github.com/sagernet/sing-box/option"
+	log "github.com/sirupsen/logrus"
 )
 
 func (b *Sing) AddUsers(p *core.AddUsersParams) (int, error) {
@@ -125,25 +126,40 @@ func userOptions(old any, p *core.AddUsersParams, replace bool, deleted map[stri
 		return &o, nil
 	case *option.ShadowsocksInboundOptions:
 		o := *old
+		length := 0
+		switch o.Method {
+		case "2022-blake3-aes-128-gcm":
+			length = 16
+		case "2022-blake3-aes-256-gcm":
+			length = 32
+		}
 		passwords := make(map[string]string, len(p.Users))
-		for _, u := range p.Users {
+		valid := p
+		for i, u := range p.Users {
 			password := u.Uuid
-			length := 0
-			switch o.Method {
-			case "2022-blake3-aes-128-gcm":
-				length = 16
-			case "2022-blake3-aes-256-gcm":
-				length = 32
-			}
 			if length > 0 {
 				if len(password) < length {
-					return nil, fmt.Errorf("shadowsocks user UUID is shorter than %d bytes", length)
+					// One malformed panel user must not block the whole
+					// snapshot (or node startup). Skip only that user.
+					log.WithFields(log.Fields{
+						"tag": p.Tag,
+						"uid": u.Id,
+					}).Warnf("Shadowsocks %s user UUID shorter than %d bytes, skipping", o.Method, length)
+					if valid == p {
+						cp := *p
+						cp.Users = append(make([]panel.UserInfo, 0, len(p.Users)), p.Users[:i]...)
+						valid = &cp
+					}
+					continue
 				}
 				password = base64.StdEncoding.EncodeToString([]byte(password[:length]))
 			}
+			if valid != p {
+				valid.Users = append(valid.Users, u)
+			}
 			passwords[u.Uuid] = password
 		}
-		o.Users = mergeInboundUsers(old.Users, p, replace, deleted,
+		o.Users = mergeInboundUsers(old.Users, valid, replace, deleted,
 			func(u option.ShadowsocksUser) string { return u.Name },
 			func(u panel.UserInfo) option.ShadowsocksUser {
 				return option.ShadowsocksUser{Name: u.Uuid, Password: passwords[u.Uuid]}

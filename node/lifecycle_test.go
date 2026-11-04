@@ -213,3 +213,58 @@ func TestUserSnapshotEmpty304AndFailedRetry(t *testing.T) {
 		t.Fatalf("snapshot retry failed: calls=%d users=%v pending=%v", calls, c.userList, c.pendingUsers)
 	}
 }
+
+func TestFailedRebuildStillSyncsUsersOnLiveInbound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/config"):
+			w.WriteHeader(http.StatusNotModified)
+		case strings.HasSuffix(r.URL.Path, "/user"):
+			w.Write([]byte(`{"users":[{"id":2,"uuid":"new"}]}`))
+		case strings.HasSuffix(r.URL.Path, "/alivelist"):
+			w.Write([]byte(`{"alive":{}}`))
+		}
+	}))
+	defer srv.Close()
+	api, err := panel.New(&conf.ApiConfig{APIHost: srv.URL, NodeType: "vless", NodeID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer api.Close()
+	old := &panel.NodeInfo{Type: "vless", Common: &panel.CommonNode{ServerPort: 1000}}
+	broken := &panel.NodeInfo{Type: "vless", Common: &panel.CommonNode{ServerPort: 2000}}
+	oldUsers := []panel.UserInfo{{Id: 1, Uuid: "old"}}
+	var updated *vCore.UpdateUsersParams
+	core := &lifecycleCore{
+		addNode: func(_ string, n *panel.NodeInfo) error {
+			if n == broken {
+				return errors.New("port in use")
+			}
+			return nil
+		},
+		updateUsers: func(p *vCore.UpdateUsersParams) error { updated = p; return nil },
+	}
+	c := &Controller{server: core, apiClient: api, tag: "rebuild-fail-sync", Options: &conf.Options{}, userList: oldUsers, appliedInfo: old, appliedSig: inboundSignature(old)}
+	c.info.Store(broken)
+	c.limiter = limiter.AddLimiter("vless", c.tag, &conf.LimitConfig{}, oldUsers, nil)
+	defer limiter.DeleteLimiter(c.tag)
+	if err := c.nodeInfoMonitor(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if updated == nil {
+		t.Fatal("user changes were not applied after a failed rebuild")
+	}
+	if updated.NodeInfo != old {
+		t.Fatal("user changes targeted the config that failed to apply")
+	}
+	if len(updated.Added) != 1 || len(updated.Deleted) != 1 {
+		t.Fatalf("wrong diff: added=%v deleted=%v", updated.Added, updated.Deleted)
+	}
+	if len(c.userList) != 1 || c.userList[0].Uuid != "new" || c.pendingUsers != nil {
+		t.Fatalf("user list not advanced: %v pending=%v", c.userList, c.pendingUsers)
+	}
+	if c.appliedSig != inboundSignature(old) {
+		t.Fatal("failed config must stay pending so the rebuild is retried")
+	}
+}

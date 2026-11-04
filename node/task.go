@@ -179,14 +179,24 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 	// 304/hash cache makes newN nil once the (bad) config has been seen once —
 	// so relying on newN would warn only a single time and then go silent.
 	usersApplied := false
-	if desired := c.info.Load(); desired != nil && c.appliedSig != inboundSignature(desired) {
+	// userInfo is the config the live inbound was built with. User changes
+	// must target that inbound, not a desired config that failed to apply.
+	userInfo := c.info.Load()
+	if desired := userInfo; desired != nil && c.appliedSig != inboundSignature(desired) {
 		log.WithField("tag", c.tag).Info("Node inbound config changed, applying (port/TLS/network/cipher)")
 		if rerr := c.rebuildInbound(desired); rerr != nil {
 			log.WithFields(log.Fields{"tag": c.tag, "err": rerr}).
-				Error("!!! 节点配置未生效：面板新配置(端口/TLS/传输/加密)应用失败，请检查面板该节点配置 !!!")
-			return nil
+				Error("!!! 节点配置未生效：面板新配置(端口/TLS/传输/加密)应用失败，仍在用旧配置运行，请检查面板该节点配置 !!!")
+			// Keep syncing users and online counts against the restored
+			// inbound, so new users can connect and removed users are cut
+			// off while the panel config is being fixed. The rebuild is
+			// retried on the next poll because appliedSig is unchanged.
+			if c.appliedInfo != nil {
+				userInfo = c.appliedInfo
+			}
+		} else {
+			usersApplied = true
 		}
-		usersApplied = true
 	}
 
 	// update alive list
@@ -200,10 +210,9 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 	}
 	newU = c.pendingUsers
 	deleted, added, modified := compareUserList(c.userList, newU)
-	curInfo := c.info.Load()
 	if !usersApplied && (len(deleted) > 0 || len(added) > 0) {
 		err = vCore.ApplyUserUpdate(c.server, &vCore.UpdateUsersParams{
-			AddUsersParams: vCore.AddUsersParams{Tag: c.tag, NodeInfo: curInfo, Users: newU},
+			AddUsersParams: vCore.AddUsersParams{Tag: c.tag, NodeInfo: userInfo, Users: newU},
 			Added:          added, Deleted: deleted,
 		})
 		if err != nil {

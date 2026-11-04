@@ -59,3 +59,24 @@ func TestShadowsocksEmptySnapshotKeepsMultiUserMode(t *testing.T) {
 		t.Fatal("old options mutated")
 	}
 }
+
+func TestShadowsocks2022SkipsOnlyShortUUIDUsers(t *testing.T) {
+	good := "11111111-1111-1111-1111-111111111111"
+	for _, method := range []string{"2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm"} {
+		t.Run(method, func(t *testing.T) {
+			old := &option.ShadowsocksInboundOptions{Method: method}
+			p := &core.AddUsersParams{Users: []panel.UserInfo{{Id: 1, Uuid: "short"}, {Id: 2, Uuid: good}, {Id: 3, Uuid: "x"}}}
+			candidate, err := userOptions(old, p, true, nil)
+			if err != nil {
+				t.Fatalf("short UUID failed the whole snapshot: %v", err)
+			}
+			next := candidate.(*option.ShadowsocksInboundOptions)
+			if len(next.Users) != 1 || next.Users[0].Name != good || next.Users[0].Password == "" {
+				t.Fatalf("expected only the valid user, got %+v", next.Users)
+			}
+			if len(p.Users) != 3 {
+				t.Fatal("caller's user list mutated")
+			}
+		})
+	}
+}

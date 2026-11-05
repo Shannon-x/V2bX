@@ -177,7 +177,7 @@ require (
 	github.com/k0kubun/go-ansi v0.0.0-20180517002512-3bf9e2903213 // indirect
 	github.com/keybase/go-keychain v0.0.1 // indirect
 	github.com/klauspost/compress v1.20.0 // indirect
-	github.com/klauspost/cpuid/v2 v2.4.1 // indirect
+	github.com/klauspost/cpuid/v2 v2.4.2 // indirect
 	github.com/kolo/xmlrpc v0.0.0-20220921171641-a4b6fa1dd06b // indirect
 	github.com/koron/go-ssdp v0.0.4 // indirect
 	github.com/kr/fs v0.1.0 // indirect
@@ -392,7 +392,7 @@ require (
 	zombiezen.com/go/capnproto2 v2.18.2+incompatible // indirect
 )
 
-replace github.com/xtls/xray-core => github.com/wyx2685/xray-core v0.0.0-20261102040409-dcfae7c4776b
+replace github.com/xtls/xray-core => github.com/wyx2685/xray-core v0.0.0-20261105071511-0061c59f331a
 
 replace github.com/apernet/quic-go => github.com/apernet/quic-go v0.63.1-0.20261004180939-a10df75c260c
 

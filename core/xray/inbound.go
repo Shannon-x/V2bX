@@ -277,6 +277,11 @@ func buildV2ray(config *conf.Options, nodeInfo *panel.NodeInfo, inbound *coreCon
 		//Set vless
 		inbound.Protocol = "vless"
 		if config.XrayOptions.EnableFallback {
+			// Xray 不允许 VLESS Encryption 和回落同时使用；以前这里会悄悄改成 decryption none，
+			// 客户端按加密连接全部失败却看不到原因，所以直接报错让节点停在启动阶段
+			if v.UsesVlessEncryption() {
+				return fmt.Errorf("vless node uses encryption %q, which cannot be combined with EnableFallback; disable fallback for this node or remove encryption in the panel", v.Encryption)
+			}
 			// Set fallback
 			fallbackConfigs, err := buildVlessFallbacks(config.XrayOptions.FallBackConfigs)
 			if err != nil {

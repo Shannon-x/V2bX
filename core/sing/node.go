@@ -206,6 +206,11 @@ func getInboundOptions(tag string, info *panel.NodeInfo, c *conf.Options) (optio
 			}
 		}
 		if info.Type == "vless" {
+			// sing-box 的 VLESS 入站没有 VLESS Encryption，照常启动会变成不加密的节点，
+			// 用加密配置的客户端全部连不上，所以直接报错
+			if n.UsesVlessEncryption() {
+				return option.Inbound{}, fmt.Errorf("vless node uses encryption %q, which the sing core does not support; use the xray core for this node or remove encryption in the panel", n.Encryption)
+			}
 			in.Type = "vless"
 			in.Options = &option.VLESSInboundOptions{
 				ListenOptions: listen,

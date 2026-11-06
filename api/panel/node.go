@@ -138,6 +138,16 @@ type EncSettings struct {
 	PrivateKey    string `json:"private_key"`
 }
 
+// UsesVlessEncryption reports whether the panel asks for VLESS Encryption
+// (anything other than an empty value or "none").
+func (n *VAllssNode) UsesVlessEncryption() bool {
+	if n == nil {
+		return false
+	}
+	e := strings.ToLower(strings.TrimSpace(n.Encryption))
+	return e != "" && e != "none"
+}
+
 type RealityConfig struct {
 	Xver         uint64 `json:"Xver"`
 	MinClientVer string `json:"MinClientVer"`

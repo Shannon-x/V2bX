@@ -223,23 +223,13 @@ func (d *DefaultDispatcher) getLink(ctx context.Context, network net.Network) (*
 		}
 
 		ts := t.GetCounter(user.Email)
-		upcounter := &counter.XrayTrafficCounter{V: &ts.UpCounter}
-		downcounter := &counter.XrayTrafficCounter{V: &ts.DownCounter}
 		// W6 / B3: wire the dirty-marker so this user shows up in the
 		// next IterateDirty without GetUserTrafficSlice having to Range
-		// the full Counters map.
-		inboundLink.Writer = &SizeStatWriter{
-			Counter: upcounter,
-			Writer:  inboundLink.Writer,
-			Parent:  t,
-			UUID:    user.Email,
-		}
-		outboundLink.Writer = &SizeStatWriter{
-			Counter: downcounter,
-			Writer:  outboundLink.Writer,
-			Parent:  t,
-			UUID:    user.Email,
-		}
+		// the full Counters map. These must stay the outermost writers:
+		// xray finds the user's counter by asserting the link writer's
+		// type when Vision splices (see newUserStatWriter).
+		inboundLink.Writer = newUserStatWriter(inboundLink.Writer, &ts.UpCounter, t, user.Email)
+		outboundLink.Writer = newUserStatWriter(outboundLink.Writer, &ts.DownCounter, t, user.Email)
 	}
 
 	return inboundLink, outboundLink, limit, nil
@@ -409,7 +399,6 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 		}
 
 		ts := t.GetCounter(user.Email)
-		downcounter := &counter.XrayTrafficCounter{V: &ts.DownCounter}
 		// W6 / B3: dirty-marker wiring (see getLink for rationale).
 		outbound.Reader = &CounterReader{
 			Reader:  &buf.TimeoutWrapperReader{Reader: outbound.Reader},
@@ -418,12 +407,10 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 			UUID:    user.Email,
 		}
 		lm.AddLink(managedWriter, outbound.Reader)
-		outbound.Writer = &SizeStatWriter{
-			Counter: downcounter,
-			Writer:  outbound.Writer,
-			Parent:  t,
-			UUID:    user.Email,
-		}
+		// Outermost writer, so freedom's splice path can find it. VLESS
+		// reaches this through DispatchLink, so this is the one that
+		// carries the Vision downlink.
+		outbound.Writer = newUserStatWriter(outbound.Writer, &ts.DownCounter, t, user.Email)
 	}
 
 	sniffingRequest := content.SniffingRequest

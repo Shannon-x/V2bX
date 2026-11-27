@@ -2,6 +2,7 @@ package node
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/InazumaV/V2bX/api/panel"
 	"github.com/InazumaV/V2bX/conf"
@@ -61,6 +62,22 @@ func (n *Node) Start(nodes []conf.NodeConfig, core vCore.Core) error {
 }
 
 func (n *Node) Close() {
+	// Stop every node's tasks and push its unreported traffic in parallel
+	// before tearing anything down, so a slow or unreachable panel delays
+	// shutdown by one closeFlushTimeout in total rather than one per node.
+	var wg sync.WaitGroup
+	for _, c := range n.controllers {
+		if c == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(c *Controller) {
+			defer wg.Done()
+			c.stopTasks()
+			c.flushUserTraffic()
+		}(c)
+	}
+	wg.Wait()
 	for _, c := range n.controllers {
 		// Guard against a nil slot just in case — defensive after the W5.1
 		// refactor (the new Start no longer leaves nils, but Close should

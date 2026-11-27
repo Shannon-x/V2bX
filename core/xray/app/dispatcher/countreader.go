@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/InazumaV/V2bX/common/counter"
+	xdispatcher "github.com/xtls/xray-core/app/dispatcher"
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 )
@@ -63,32 +64,18 @@ func (c *CounterReader) Interrupt() {
 	common.Interrupt(c.Reader)
 }
 
-type SizeStatWriter struct {
-	Counter *counter.XrayTrafficCounter
-	Writer  buf.Writer
-	// W6 / B3: optional dirty-marker — see CounterReader for rationale.
-	Parent *counter.TrafficCounter
-	UUID   string
-}
-
-func (w *SizeStatWriter) markDirty() {
-	if w.Parent != nil && w.UUID != "" {
-		w.Parent.MarkDirty(w.UUID)
+// newUserStatWriter wraps w so every byte written through it is credited
+// to v (one direction of one user's TrafficStorage).
+//
+// It must return xray's own *dispatcher.SizeStatWriter, not a V2bX type.
+// When XTLS Vision switches a connection to splice, xray's
+// proxy.CopyRawConnIfExist copies the downlink in the kernel and credits the
+// user only via `writer.(*dispatcher.SizeStatWriter).Counter.Add(n)`. Any
+// other wrapper type fails that assertion, and every spliced byte goes
+// unbilled (measured: 9,248 B billed for a 20 MiB Vision download).
+func newUserStatWriter(w buf.Writer, v *atomic.Int64, parent *counter.TrafficCounter, uuid string) *xdispatcher.SizeStatWriter {
+	return &xdispatcher.SizeStatWriter{
+		Counter: &counter.XrayTrafficCounter{V: v, Parent: parent, UUID: uuid},
+		Writer:  w,
 	}
-}
-
-func (w *SizeStatWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
-	if mb != nil && mb.Len() > 0 {
-		w.Counter.V.Add(int64(mb.Len()))
-		w.markDirty()
-	}
-	return w.Writer.WriteMultiBuffer(mb)
-}
-
-func (w *SizeStatWriter) Close() error {
-	return common.Close(w.Writer)
-}
-
-func (w *SizeStatWriter) Interrupt() {
-	common.Interrupt(w.Writer)
 }

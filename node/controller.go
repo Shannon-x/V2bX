@@ -50,6 +50,12 @@ type Controller struct {
 	*conf.Options
 	apiConfig *conf.ApiConfig
 	apiMutex  sync.RWMutex
+	// reportMu serializes taking and pushing traffic between the periodic
+	// report and the final flush in Close (see pushUserTraffic).
+	reportMu sync.Mutex
+	// flushed makes the final flush run once, whether Node.Close or
+	// Controller.Close gets to it first.
+	flushed atomic.Bool
 }
 
 // NewController return a Node controller with default parameters.
@@ -253,6 +259,26 @@ func (c *Controller) Start() error {
 // Close implement the Close() function of the service interface
 func (c *Controller) Close() error {
 	limiter.DeleteLimiter(c.tag)
+	c.stopTasks()
+	// DelNode drops this node's traffic counters, so push what accrued since
+	// the last periodic report first. No-op if Node.Close already did.
+	c.flushUserTraffic()
+	err := c.server.DelNode(c.tag)
+	if err != nil {
+		return fmt.Errorf("del node error: %s", err)
+	}
+	// W3.3 / audit #47 #55: close the panel HTTP client so idle TLS
+	// connections (10 per host × 90s) don't leak across reloads.
+	c.apiMutex.Lock()
+	if c.apiClient != nil {
+		c.apiClient.Close()
+	}
+	c.apiMutex.Unlock()
+	return nil
+}
+
+// stopTasks stops the periodic tasks. Safe to call more than once.
+func (c *Controller) stopTasks() {
 	if c.nodeInfoMonitorPeriodic != nil {
 		c.nodeInfoMonitorPeriodic.Close()
 	}
@@ -268,18 +294,6 @@ func (c *Controller) Close() error {
 	if c.onlineIpReportPeriodic != nil {
 		c.onlineIpReportPeriodic.Close()
 	}
-	err := c.server.DelNode(c.tag)
-	if err != nil {
-		return fmt.Errorf("del node error: %s", err)
-	}
-	// W3.3 / audit #47 #55: close the panel HTTP client so idle TLS
-	// connections (10 per host × 90s) don't leak across reloads.
-	c.apiMutex.Lock()
-	if c.apiClient != nil {
-		c.apiClient.Close()
-	}
-	c.apiMutex.Unlock()
-	return nil
 }
 
 func (c *Controller) buildNodeTag(node *panel.NodeInfo) string {

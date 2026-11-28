@@ -39,15 +39,24 @@ func (h *HookServer) LogTraffic(id string, tx, rx uint64) (ok bool) {
 		return false
 	}
 
-	if userLimit, found := limiterinfo.UserLimitInfo.Load(format.UserTag(h.Tag, id)); found {
-		userlimitInfo := userLimit.(*limiter.UserLimitInfo)
-		// W2.7 / audit #27 #48: CompareAndSwap so the flip-and-skip is atomic.
-		// Without it, two concurrent LogTraffic calls could both observe true,
-		// both flip to false, and both incorrectly drop one packet's worth of
-		// accounting (the OverLimit signal is supposed to fire exactly once).
-		if userlimitInfo.OverLimit.CompareAndSwap(true, false) {
-			return false
-		}
+	userLimit, found := limiterinfo.UserLimitInfo.Load(format.UserTag(h.Tag, id))
+	if !found {
+		// The panel no longer lists this user: deleted, banned, expired or
+		// out of traffic. Authentication only runs when a connection opens,
+		// and the EventLogger callbacks cannot refuse a stream, so this is
+		// the one place that can stop a session opened before the removal.
+		// Returning false makes hysteria close the client's QUIC connection.
+		// The bytes are not counted: the report would drop them anyway,
+		// since the user has no uid left.
+		return false
+	}
+	userlimitInfo := userLimit.(*limiter.UserLimitInfo)
+	// W2.7 / audit #27 #48: CompareAndSwap so the flip-and-skip is atomic.
+	// Without it, two concurrent LogTraffic calls could both observe true,
+	// both flip to false, and both incorrectly drop one packet's worth of
+	// accounting (the OverLimit signal is supposed to fire exactly once).
+	if userlimitInfo.OverLimit.CompareAndSwap(true, false) {
+		return false
 	}
 
 	// W2.5 / W6 / audit #22 #42 #56 / B1: Load-first fast path; LoadOrStore

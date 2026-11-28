@@ -367,12 +367,17 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 		expire := u.ExpireTime.Load()
 		speedLimit := int(u.SpeedLimit.Load())
 		if expire < time.Now().Unix() && expire != 0 {
-			if speedLimit != 0 {
-				userLimit = speedLimit
+			// The dynamic limit has expired: fall back to the user's own
+			// limit. The record must stay. A missing record means the panel
+			// removed the user, so the branch below rejects it and hy2
+			// disconnects it; deleting it here used to lock users with no
+			// base speed limit out of this node until a restart.
+			userLimit = speedLimit
+			// Only the call that clears the expiry resets the shared bucket,
+			// which still carries the dynamic rate.
+			if u.ExpireTime.CompareAndSwap(expire, 0) {
 				u.DynamicSpeedLimit.Store(0)
-				u.ExpireTime.Store(0)
-			} else {
-				l.UserLimitInfo.Delete(taguuid)
+				l.resetSpeedBucket(taguuid, determineSpeedLimit(nodeLimit, userLimit))
 			}
 		} else {
 			userLimit = determineSpeedLimit(speedLimit, int(u.DynamicSpeedLimit.Load()))
@@ -401,6 +406,20 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 		return db, false
 	}
 	return nil, false
+}
+
+// resetSpeedBucket points the user's shared rate bucket at limitMbps, or
+// drops it when the user is no longer limited. Connections already holding
+// a dropped bucket keep its rate until they close, as in UpdateUser.
+func (l *Limiter) resetSpeedBucket(taguuid string, limitMbps int) {
+	limit := int64(limitMbps) * 1000000 / 8
+	if limit <= 0 {
+		l.SpeedLimiter.Delete(taguuid)
+		return
+	}
+	if v, ok := l.SpeedLimiter.Load(taguuid); ok {
+		v.(*rate.DynamicBucket).Update(limit)
+	}
 }
 
 func (l *Limiter) GetOnlineDevice() ([]panel.OnlineUser, error) {

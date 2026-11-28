@@ -192,6 +192,26 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 	// W2.4: snapshot the current NodeInfo pointer once for the rest of this
 	// tick; downstream calls must not re-Load to avoid mismatches.
 	curInfo := c.info.Load()
+	if len(added) > 0 || len(deleted) > 0 || len(modified) > 0 {
+		// Update the limiter before the core. Once a deleted user's limit
+		// record is gone, the core refuses that user's new streams (xray,
+		// sing) and hy2 drops the user's sessions on the next traffic
+		// callback, so nothing opened during DelUsers outlives it. An added
+		// user likewise has a record before the core lets it authenticate,
+		// which hy2 now requires. If a core call below fails, c.userList
+		// stays as it was and the next poll repeats this update, which is
+		// safe to apply twice.
+		c.limiter.UpdateUser(c.tag, added, deleted, modified)
+		// clear traffic record
+		if c.LimitConfig.EnableDynamicSpeedLimit {
+			// W2.4: trafficMu serializes with SpeedChecker.
+			c.trafficMu.Lock()
+			for i := range deleted {
+				delete(c.traffic, deleted[i].Uuid)
+			}
+			c.trafficMu.Unlock()
+		}
+	}
 	if len(deleted) > 0 {
 		// have deleted users
 		err = c.server.DelUsers(deleted, c.tag, curInfo)
@@ -216,19 +236,6 @@ func (c *Controller) nodeInfoMonitor(ctx context.Context) (err error) {
 				"err": err,
 			}).Error("Add users failed")
 			return nil
-		}
-	}
-	if len(added) > 0 || len(deleted) > 0 || len(modified) > 0 {
-		// update Limiter
-		c.limiter.UpdateUser(c.tag, added, deleted, modified)
-		// clear traffic record
-		if c.LimitConfig.EnableDynamicSpeedLimit {
-			// W2.4: trafficMu serializes with SpeedChecker.
-			c.trafficMu.Lock()
-			for i := range deleted {
-				delete(c.traffic, deleted[i].Uuid)
-			}
-			c.trafficMu.Unlock()
 		}
 	}
 	c.userList = newU
